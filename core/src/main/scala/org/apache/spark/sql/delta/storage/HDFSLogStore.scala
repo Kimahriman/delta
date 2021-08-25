@@ -20,9 +20,13 @@ import java.io.{IOException, _}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.FileAlreadyExistsException
 import java.util.{EnumSet, UUID}
+import java.util.concurrent.ConcurrentHashMap
 
+import scala.collection.JavaConverters._
+import scala.collection.mutable.{HashMap, Map}
 import scala.util.control.NonFatal
 
+import org.apache.commons.io.IOUtils
 import org.apache.spark.sql.delta.DeltaErrors
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs._
@@ -43,11 +47,56 @@ import org.apache.spark.internal.Logging
 class HDFSLogStore(sparkConf: SparkConf, defaultHadoopConf: Configuration)
   extends HadoopFileSystemLogStore(sparkConf, defaultHadoopConf) with Logging{
 
-  protected def getFileContext(path: Path): FileContext = {
-    FileContext.getFileContext(path.toUri, getHadoopConfiguration)
+  // Cache the file context based on the scheme and authority. A single log store should only work
+  // with one file system, but we don't have access to the log path in the constructor
+  private val fileContextCache: Map[(String, String), FileContext] = new HashMap
+
+  protected def getFileContext(path: Path, write: Boolean = false): Option[FileContext] = {
+    try {
+      val qualifiedPath = resolvePathOnPhysicalStorage(path)
+      val scheme = qualifiedPath.toUri.getScheme()
+      assert(scheme != null, "path must be fully qualified")
+      val authority = qualifiedPath.toUri.getAuthority()
+      Some(fileContextCache.getOrElseUpdate((scheme, authority),
+        FileContext.getFileContext(qualifiedPath.toUri, getHadoopConfiguration)))
+    } catch {
+    case e: IOException if e.getMessage.contains(noAbstractFileSystemExceptionMessage) =>
+      if (write) {
+        val newException = DeltaErrors.incorrectLogStoreImplementationException(sparkConf, e)
+        logError(newException.getMessage, newException.getCause)
+        throw newException
+      }
+      None
+    }
   }
 
   val noAbstractFileSystemExceptionMessage = "No AbstractFileSystem"
+
+  override def read(path: Path): Seq[String] = {
+    getFileContext(path) match {
+      case Some(fc) =>
+        val stream = fc.open(path)
+        try {
+          val reader = new BufferedReader(new InputStreamReader(stream, UTF_8))
+          IOUtils.readLines(reader).asScala.map(_.trim)
+        } finally {
+          stream.close()
+        }
+      case None => super.read(path)
+    }
+  }
+
+  override def listFrom(path: Path): Iterator[FileStatus] = {
+    getFileContext(path) match {
+      case Some(fc) =>
+        if (!fc.util.exists(path.getParent)) {
+          throw new FileNotFoundException(s"No such file or directory: ${path.getParent}")
+        }
+        val files = fc.util.listStatus(path.getParent)
+        files.filter(_.getPath.getName >= path.getName).sortBy(_.getPath.getName).iterator
+      case None => super.listFrom(path)
+    }
+  }
 
   def write(path: Path, actions: Iterator[String], overwrite: Boolean = false): Unit = {
     val isLocalFs = path.getFileSystem(getHadoopConfiguration).isInstanceOf[RawLocalFileSystem]
@@ -66,14 +115,7 @@ class HDFSLogStore(sparkConf: SparkConf, defaultHadoopConf: Configuration)
   }
 
   private def writeInternal(path: Path, actions: Iterator[String], overwrite: Boolean): Unit = {
-    val fc: FileContext = try {
-      getFileContext(path)
-    } catch {
-      case e: IOException if e.getMessage.contains(noAbstractFileSystemExceptionMessage) =>
-        val newException = DeltaErrors.incorrectLogStoreImplementationException(sparkConf, e)
-        logError(newException.getMessage, newException.getCause)
-        throw newException
-    }
+    val fc = getFileContext(path, true).get
     if (!overwrite && fc.util.exists(path)) {
       // This is needed for the tests to throw error with local file system
       throw new FileAlreadyExistsException(path.toString)
