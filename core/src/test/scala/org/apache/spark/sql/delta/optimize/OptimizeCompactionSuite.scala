@@ -75,6 +75,23 @@ trait OptimizeCompactionSuiteBase extends QueryTest
     }
   }
 
+  test("optimize command via DeltaTable") {
+    withTempDir { tempDir =>
+      appendToDeltaTable(Seq(1, 2, 3).toDF(), tempDir.toString, partitionColumns = None)
+      appendToDeltaTable(Seq(4, 5, 6).toDF(), tempDir.toString, partitionColumns = None)
+
+      def data: DataFrame = spark.read.format("delta").load(tempDir.toString)
+
+      val deltaTable = io.delta.tables.DeltaTable.forPath(spark, tempDir.getPath)
+      val deltaLog = DeltaLog.forTable(spark, tempDir)
+      val versionBeforeOptimize = deltaLog.snapshot.version
+      deltaTable.optimize()
+      deltaLog.update()
+      assert(deltaLog.snapshot.version === versionBeforeOptimize + 1)
+      checkDatasetUnorderly(data.toDF().as[Int], 1, 2, 3, 4, 5, 6)
+    }
+  }
+
   test("optimize command: predicate on non-partition column") {
     withTempDir { tempDir =>
       val path = new File(tempDir, "testTable").getCanonicalPath
@@ -87,6 +104,24 @@ trait OptimizeCompactionSuiteBase extends QueryTest
       val e = intercept[AnalysisException] {
         // Should fail when predicate is on a non-partition column
         spark.sql(s"OPTIMIZE '$path' WHERE value < 4")
+      }
+      assert(e.getMessage.contains("Predicate references non-partition column 'value'. " +
+                                       "Only the partition columns may be referenced: [id]"))
+    }
+  }
+
+  test("optimize command via DeltaTable: predicate on non-partition column") {
+    withTempDir { tempDir =>
+      val path = new File(tempDir, "testTable").getCanonicalPath
+      val partitionColumns = Some(Seq("id"))
+      appendToDeltaTable(
+        Seq(1, 2, 3).toDF("value").withColumn("id", 'value % 2),
+        path,
+        partitionColumns)
+
+      val e = intercept[AnalysisException] {
+        // Should fail when predicate is on a non-partition column
+        io.delta.tables.DeltaTable.forPath(spark, path).optimize("value < 4")
       }
       assert(e.getMessage.contains("Predicate references non-partition column 'value'. " +
                                        "Only the partition columns may be referenced: [id]"))

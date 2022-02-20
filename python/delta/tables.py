@@ -95,13 +95,32 @@ class DeltaTable(object):
 
             deltaTable.delete(col("date") < "2017-01-01")   # predicate using Spark SQL functions
 
-        :param condition: condition of the update
+        :param condition: condition of the delete
         :type condition: str or pyspark.sql.Column
         """
         if condition is None:
             self._jdt.delete()
         else:
             self._jdt.delete(DeltaTable._condition_to_jcolumn(condition))
+
+    @since(1.2)  # type: ignore[arg-type]
+    def optimize(self, condition: OptionalExpressionOrColumn = None) -> None:
+        """
+        Optimize data from the table that match the given ``condition``.
+
+        Example::
+
+            deltaTable.optimize("date < '2017-01-01'")        # predicate using SQL formatted string
+
+            deltaTable.optimize(col("date") < "2017-01-01")   # predicate using Spark SQL functions
+
+        :param condition: condition of the optimize
+        :type condition: str or pyspark.sql.Column
+        """
+        if condition is None:
+            self._jdt.optimize()
+        else:
+            self._jdt.optimize(DeltaTable._condition_to_jcolumn(condition))
 
     @overload
     def update(
