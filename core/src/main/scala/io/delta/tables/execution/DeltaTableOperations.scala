@@ -19,7 +19,7 @@ package io.delta.tables.execution
 import scala.collection.Map
 
 import org.apache.spark.sql.delta.DeltaLog
-import org.apache.spark.sql.delta.commands.{DeltaGenerateCommand, RestoreTableCommand, VacuumCommand}
+import org.apache.spark.sql.delta.commands.{DeltaGenerateCommand, OptimizeExecutor, RestoreTableCommand, VacuumCommand}
 import org.apache.spark.sql.delta.util.AnalysisHelper
 import io.delta.tables.DeltaTable
 
@@ -80,6 +80,11 @@ trait DeltaTableOperations extends AnalysisHelper { self: DeltaTable =>
       version: Option[Long] = None,
       timestamp: Option[String] = None): DataFrame = {
     RestoreTableCommand(deltaLog, version, timestamp).run(sparkSession)
+    sparkSession.emptyDataFrame
+  }
+
+  protected def executeOptimize(condition: Option[Expression]): DataFrame = {
+    val optimize = new OptimizeExecutor(sparkSession, deltaLog, condition.toSeq).optimize()
     sparkSession.emptyDataFrame
   }
 
