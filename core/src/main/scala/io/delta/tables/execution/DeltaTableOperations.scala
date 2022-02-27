@@ -19,7 +19,7 @@ package io.delta.tables.execution
 import scala.collection.Map
 
 import org.apache.spark.sql.delta.DeltaLog
-import org.apache.spark.sql.delta.commands.{DeltaGenerateCommand, OptimizeExecutor, RestoreTableCommand, VacuumCommand}
+import org.apache.spark.sql.delta.commands.{DeltaGenerateCommand, OptimizeExecutor, OptimizeTableCommand, RestoreTableCommand, VacuumCommand}
 import org.apache.spark.sql.delta.util.AnalysisHelper
 import io.delta.tables.DeltaTable
 
@@ -83,9 +83,15 @@ trait DeltaTableOperations extends AnalysisHelper { self: DeltaTable =>
     sparkSession.emptyDataFrame
   }
 
-  protected def executeOptimize(condition: Option[Expression]): DataFrame = {
-    val optimize = new OptimizeExecutor(sparkSession, deltaLog, condition.toSeq).optimize()
-    sparkSession.emptyDataFrame
+  protected def executeOptimize(
+      tblIdentifier: String,
+      condition: Option[String]): DataFrame = {
+    val tableId: TableIdentifier = sparkSession
+      .sessionState
+      .sqlParser
+      .parseTableIdentifier(tblIdentifier)
+    val optimize = OptimizeTableCommand(None, Some(tableId), condition)
+    toDataset(sparkSession, optimize)
   }
 
   protected def toStrColumnMap(map: Map[String, String]): Map[String, Column] = {
