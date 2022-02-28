@@ -67,6 +67,34 @@ class DeltaTableTests(DeltaTestCase):
         with self.assertRaises(TypeError):
             dt.delete(condition=1)  # type: ignore[arg-type]
 
+    def test_optimize(self) -> None:
+        df = self.spark.createDataFrame([('a', 1), ('b', 2)], ["key", "value"])
+        df.write.format("delta").partitionBy('key').save(self.tempFile)
+
+        df = self.spark.createDataFrame([('a', 3), ('b', 4)], ["key", "value"])
+        df.write.format("delta").partitionBy('key').save(self.tempFile)
+
+        table_data = [('a', 1), ('b', 2), ('a', 3), ('b', 4)]
+
+        dt = DeltaTable.forPath(self.spark, self.tempFile)
+
+        # optimize with condition as str
+        dt.optimize("key = 'a'")
+
+        self.__checkAnswer(dt.toDF(), table_data)
+
+        # optimize with condition as Column
+        dt.optimize(col("key") == "b")
+        self.__checkAnswer(dt.toDF(), table_data)
+
+        # optimize without condition
+        dt.optimize()
+        self.__checkAnswer(dt.toDF(), table_data)
+
+        # # condition isn't partition
+        # with self.assertRaises(TypeError):
+        #     dt.delete(condition="value = 1")  # type: ignore[arg-type]
+
     def test_generate(self) -> None:
         # create a delta table
         numFiles = 10
