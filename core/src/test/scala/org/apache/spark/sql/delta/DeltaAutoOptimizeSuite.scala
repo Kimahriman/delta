@@ -28,6 +28,7 @@ import org.apache.spark.sql.execution.CoalesceExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.execution.exchange.REPARTITION_BY_NUM
+import org.apache.spark.sql.functions._
 import org.apache.spark.sql.test.SharedSparkSession
 
 class DeltaAutoOptimizeSuite extends QueryTest with SharedSparkSession with DeltaSQLCommandTest {
@@ -93,52 +94,49 @@ class DeltaAutoOptimizeSuite extends QueryTest with SharedSparkSession with Delt
   test("test enabling OptimizeWrite") {
     val tableName = "optimizeWriteTestTable"
     val tableName2 = s"${tableName}2"
+
     withTable(tableName, tableName2) {
       withTempDir { dir =>
         val rootPath = dir.getCanonicalPath
         val path = new Path(rootPath, "table1").toString
 
-        {
-          var expectedTableVersion = -1
-          writeData(20, path)
-          expectedTableVersion += 1 // version should be 0.
-          checkTableVersionAndNumFiles(path, expectedTableVersion, 20)
+        var expectedTableVersion = -1
+        writeData(20, path)
+        expectedTableVersion += 1 // version should be 0.
+        checkTableVersionAndNumFiles(path, expectedTableVersion, 20)
 
-          withSQLConf(DeltaSQLConf.OPTIMIZE_WRITE_ENABLED.key -> "true") {
-            writeData(20, path)
-            expectedTableVersion += 1 // optimize should be done with write transaction.
-            checkTableVersionAndNumFiles(path, expectedTableVersion, 1)
-          }
+        withSQLConf(DeltaSQLConf.OPTIMIZE_WRITE_ENABLED.key -> "true") {
+          writeData(20, path)
+          expectedTableVersion += 1 // optimize should be done with write transaction.
+          checkTableVersionAndNumFiles(path, expectedTableVersion, 1)
         }
 
-        {
-          // Test with default table properties.
-          // Note that 0.6.1 does not support setting table properties using DDL.
-          // E.g. CREATE/ALTER TABLE; no way to change the properties after it's created.
-          var expectedTableVersion = -1
-          // Test default delta table config
-          val path2 = new Path(rootPath, "table2").toString
-          withSQLConf(
-            "spark.databricks.delta.properties.defaults.autoOptimize.optimizeWrite" -> "true") {
-            writeData(20, path2)
-            expectedTableVersion += 1
-            checkTableVersionAndNumFiles(path2, expectedTableVersion, 1)
-          }
+        // Test with default table properties.
+        // Note that 0.6.1 does not support setting table properties using DDL.
+        // E.g. CREATE/ALTER TABLE; no way to change the properties after it's created.
+        expectedTableVersion = -1
+        // Test default delta table config
+        val path2 = new Path(rootPath, "table2").toString
+        withSQLConf(
+          "spark.databricks.delta.properties.defaults.autoOptimize.optimizeWrite" -> "true") {
+          writeData(20, path2)
+          expectedTableVersion += 1
+          checkTableVersionAndNumFiles(path2, expectedTableVersion, 1)
+        }
 
-          // Session config should be prior to table property.
-          withSQLConf(DeltaSQLConf.OPTIMIZE_WRITE_ENABLED.key -> "false") {
-            writeData(20, path2)
-            expectedTableVersion += 1 // autoCompact should not be triggered
-            checkTableVersionAndNumFiles(path2, expectedTableVersion, 20)
-          }
+        // Session config should be prior to table property.
+        withSQLConf(DeltaSQLConf.OPTIMIZE_WRITE_ENABLED.key -> "false") {
+          writeData(20, path2)
+          expectedTableVersion += 1 // autoCompact should not be triggered
+          checkTableVersionAndNumFiles(path2, expectedTableVersion, 20)
+        }
 
-          withSQLConf(
-            "spark.databricks.delta.properties.defaults.autoOptimize.optimizeWrite" -> "false") {
-            // defaults config only applied at table creation.
-            writeData(20, path2)
-            expectedTableVersion += 1 // autoCompact should be triggered
-            checkTableVersionAndNumFiles(path2, expectedTableVersion, 1)
-          }
+        withSQLConf(
+          "spark.databricks.delta.properties.defaults.autoOptimize.optimizeWrite" -> "false") {
+          // defaults config only applied at table creation.
+          writeData(20, path2)
+          expectedTableVersion += 1 // autoCompact should be triggered
+          checkTableVersionAndNumFiles(path2, expectedTableVersion, 1)
         }
       }
     }
@@ -163,6 +161,62 @@ class DeltaAutoOptimizeSuite extends QueryTest with SharedSparkSession with Delt
         // binSize is small, so won't coalesce partitions.
         writeData(30, path)
         checkTableVersionAndNumFiles(path, 1, 7)
+      }
+    }
+  }
+
+  test("test enabling autoCompact") {
+    val tableName = "autoCompactTestTable"
+    val tableName2 = s"${tableName}2"
+    withTable(tableName, tableName2) {
+      withTempDir { dir =>
+        val rootPath = dir.getCanonicalPath
+        val path = new Path(rootPath, "table1").toString
+        var expectedTableVersion = -1
+        spark.conf.unset(DeltaSQLConf.AUTO_COMPACT_ENABLED.key)
+        writeData(100, path)
+        // No autoCompact triggered - version should be 0.
+        expectedTableVersion += 1
+        checkTableVersionAndNumFiles(path, expectedTableVersion, 100)
+
+        // Create table
+        spark.sql(s"CREATE TABLE $tableName USING DELTA LOCATION '$path'")
+        spark.sql(
+          s"ALTER TABLE $tableName SET TBLPROPERTIES (delta.autoOptimize.autoCompact = true)")
+        expectedTableVersion += 1 // version increased due to ALTER TABLE
+
+        writeData(100, path)
+        expectedTableVersion += 2 // autoCompact should be triggered
+        checkTableVersionAndNumFiles(path, expectedTableVersion, 1)
+
+        withSQLConf(DeltaSQLConf.AUTO_COMPACT_ENABLED.key -> "false") {
+          // Session config should be prior to table properties
+          writeData(100, path)
+          expectedTableVersion += 1 // autoCompact should not be triggered
+          checkTableVersionAndNumFiles(path, expectedTableVersion, 100)
+        }
+
+        spark.sql(
+          s"ALTER TABLE $tableName SET TBLPROPERTIES (delta.autoOptimize.autoCompact = false)")
+        expectedTableVersion += 1 // version increased due to SET TBLPROPERTIES
+
+        withSQLConf(DeltaSQLConf.AUTO_COMPACT_ENABLED.key -> "true") {
+          // Session config should be prior to table properties
+          writeData(100, path)
+          expectedTableVersion += 2 // autoCompact should be triggered
+          checkTableVersionAndNumFiles(path, expectedTableVersion, 1)
+        }
+
+        spark.conf.unset(DeltaSQLConf.AUTO_COMPACT_ENABLED.key)
+
+        // Test default delta table config
+        withSQLConf(
+          "spark.databricks.delta.properties.defaults.autoOptimize.autoCompact" -> "true") {
+          val path2 = new Path(rootPath, "table2").toString
+          writeData(100, path2)
+          // autoCompact should be triggered for path2.
+          checkTableVersionAndNumFiles(path2, 1, 1)
+        }
       }
     }
   }
@@ -233,6 +287,48 @@ class DeltaAutoOptimizeSuite extends QueryTest with SharedSparkSession with Delt
     }
   }
 
+  test("test autoCompact configs") {
+    val tableName = "autoCompactTestTable"
+    withTable(tableName) {
+      withTempDir { dir =>
+        val rootPath = dir.getCanonicalPath
+        val path = new Path(rootPath, "table1").toString
+        var expectedTableVersion = -1
+        withSQLConf(DeltaSQLConf.AUTO_COMPACT_ENABLED.key -> "true") {
+          writeData(100, path, partitioned = true)
+          expectedTableVersion += 2 // autoCompact should be triggered
+          checkTableVersionAndNumFiles(path, expectedTableVersion, 2)
+
+          withSQLConf(DeltaSQLConf.AUTO_COMPACT_MIN_NUM_FILES.key -> "200") {
+            writeData(100, path, partitioned = true)
+            expectedTableVersion += 1 // autoCompact should not be triggered
+            checkTableVersionAndNumFiles(path, expectedTableVersion, 200)
+          }
+
+          withSQLConf(DeltaSQLConf.AUTO_COMPACT_MAX_FILE_SIZE.key -> "1") {
+            writeData(100, path, partitioned = true)
+            expectedTableVersion += 1 // autoCompact should not be triggered
+            checkTableVersionAndNumFiles(path, expectedTableVersion, 200)
+          }
+
+          withSQLConf(DeltaSQLConf.DELTA_OPTIMIZE_MAX_FILE_SIZE.key -> "101024",
+            DeltaSQLConf.AUTO_COMPACT_MIN_NUM_FILES.key -> "2") {
+            val dt = io.delta.tables.DeltaTable.forPath(path)
+            dt.optimize().executeCompaction()
+            expectedTableVersion += 1 // autoCompact should not be triggered
+            checkTableVersionAndNumFiles(path, expectedTableVersion, 8)
+          }
+
+          withSQLConf(DeltaSQLConf.AUTO_COMPACT_MIN_NUM_FILES.key -> "100") {
+            writeData(100, path, partitioned = true)
+            expectedTableVersion += 2 // autoCompact should be triggered
+            checkTableVersionAndNumFiles(path, expectedTableVersion, 2)
+          }
+        }
+      }
+    }
+  }
+
   test("test DeltaShufflePartitionsUtil.partitioningForRebalance") {
     withTempDir { dir =>
       val rootPath = dir.getCanonicalPath
@@ -269,6 +365,60 @@ class DeltaAutoOptimizeSuite extends QueryTest with SharedSparkSession with Delt
 
         assert(partitioning.isInstanceOf[RoundRobinPartitioning])
         assert(partitioning.numPartitions == 100)
+      }
+    }
+  }
+
+  test("test max compact data size config") {
+    withTempDir { dir =>
+      val rootPath = dir.getCanonicalPath
+      val path = new Path(rootPath, "table1").toString
+      var expectedTableVersion = -1
+      writeData(100, path, partitioned = true)
+      expectedTableVersion += 1
+      val dt = io.delta.tables.DeltaTable.forPath(path)
+      val dl = DeltaLog.forTable(spark, path)
+      val sizeLimit =
+        dl.snapshot.allFiles
+          .filter(col("path").contains("colC=1"))
+          .agg(sum(col("size")))
+          .head
+          .getLong(0) * 2
+
+      withSQLConf(DeltaSQLConf.AUTO_COMPACT_ENABLED.key -> "true",
+        DeltaSQLConf.AUTO_COMPACT_MAX_COMPACT_BYTES.key -> sizeLimit.toString) {
+        dt.toDF
+          .filter("colC == 1")
+          .repartition(50)
+          .write
+          .format("delta")
+          .mode("append")
+          .save(path)
+        val dl = DeltaLog.forTable(spark, path)
+        // version 0: write, 1: append, 2: autoCompact
+        assert(dl.snapshot.version == 2)
+
+        {
+          val afterAutoCompact = dl.snapshot.allFiles.filter(col("path").contains("colC=1")).count
+          val beforeAutoCompact = dl
+            .getSnapshotAt(dl.snapshot.version - 1)
+            .allFiles
+            .filter(col("path").contains("colC=1"))
+            .count
+          assert(beforeAutoCompact == 150)
+          assert(afterAutoCompact == 1)
+        }
+
+        {
+          val afterAutoCompact = dl.snapshot.allFiles.filter(col("path").contains("colC=0")).count
+          val beforeAutoCompact = dl
+            .getSnapshotAt(dl.snapshot.version - 1)
+            .allFiles
+            .filter(col("path").contains("colC=0"))
+            .count
+          assert(beforeAutoCompact == 100)
+          assert(afterAutoCompact == 100)
+        }
       }
     }
   }
@@ -370,5 +520,73 @@ class DeltaAutoOptimizeSuite extends QueryTest with SharedSparkSession with Delt
       smallPartitionFactor, mergedPartitionFactor).toSeq ==
       Seq(0, 3, 4, 9))
 
+  }
+
+  test("test autoCompact.target config") {
+    withTempDir { dir =>
+      val rootPath = dir.getCanonicalPath
+      val path1 = new Path(rootPath, "table1").toString
+      val path2 = new Path(rootPath, "table2").toString
+      val path3 = new Path(rootPath, "table3").toString
+
+      def testAutoCompactTarget(path: String, target: String, expectedColC1Cnt: Long): Unit = {
+        writeData(100, path, partitioned = true)
+        val dt = io.delta.tables.DeltaTable.forPath(path)
+
+        withSQLConf(
+          "spark.databricks.delta.autoCompact.enabled" -> "true",
+          "spark.databricks.delta.autoCompact.target" -> target) {
+          dt.toDF
+            .filter("colC == 1")
+            .repartition(50)
+            .write
+            .format("delta")
+            .mode("append")
+            .save(path)
+
+          val dl = DeltaLog.forTable(spark, path)
+          // version 0: write, 1: append, 2: autoCompact
+          assert(dl.snapshot.version == 2, target)
+
+          {
+            val afterAutoCompact = dl.snapshot.allFiles.filter(col("path").contains("colC=1")).count
+            val beforeAutoCompact = dl
+              .getSnapshotAt(dl.snapshot.version - 1)
+              .allFiles
+              .filter(col("path").contains("colC=1"))
+              .count
+
+            assert(beforeAutoCompact == 150)
+            assert(afterAutoCompact == expectedColC1Cnt)
+          }
+
+          {
+            val afterAutoCompact = dl.snapshot.allFiles.filter(col("path").contains("colC=0")).count
+            val beforeAutoCompact = dl
+              .getSnapshotAt(dl.snapshot.version - 1)
+              .allFiles
+              .filter(col("path").contains("colC=0"))
+              .count
+
+            assert(beforeAutoCompact == 100)
+            assert(afterAutoCompact == 100)
+          }
+        }
+      }
+      // Existing files are not optimized; newly added 50 files should be optimized.
+      // 100 of colC=0, 101 of colC=1
+      testAutoCompactTarget(path1, "commit", 101)
+      // Modified partition should be optimized.
+      // 100 of colC=0, 1 of colC=1
+      testAutoCompactTarget(path2, "partition", 1)
+
+      withSQLConf(
+        "spark.databricks.delta.autoCompact.enabled" -> "true",
+        "spark.databricks.delta.autoCompact.target" -> "partition") {
+        writeData(100, path3)
+        // non-partitioned data should work with "partition" option.
+        checkTableVersionAndNumFiles(path3, 1, 1)
+      }
+    }
   }
 }

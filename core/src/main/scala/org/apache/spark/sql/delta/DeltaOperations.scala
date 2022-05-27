@@ -425,8 +425,9 @@ object DeltaOperations {
   /** Recorded when optimizing the table. */
   case class Optimize(
       predicate: Seq[String],
-      zOrderBy: Seq[String] = Seq.empty
-  ) extends OptimizeOrReorg(OPTIMIZE_OPERATION_NAME) {
+      zOrderBy: Seq[String] = Seq.empty,
+      auto: Boolean)
+    extends OptimizeOrReorg(OPTIMIZE_OPERATION_NAME) {
     override val parameters: Map[String, Any] = Map(
       "predicate" -> JsonUtils.toJson(predicate),
       ZORDER_PARAMETER_KEY -> JsonUtils.toJson(zOrderBy)

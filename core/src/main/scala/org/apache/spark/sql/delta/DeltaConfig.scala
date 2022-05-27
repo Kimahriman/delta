@@ -481,6 +481,16 @@ trait DeltaConfigsBase extends DeltaLogging {
    */
   val OPTIMIZE_WRITE = buildConfig[Boolean](
     "autoOptimize.optimizeWrite",
+     "false",
+    _.toBoolean,
+    _ => true,
+    "needs to be a boolean.")
+
+   /**
+   * Enable auto compaction.
+   */
+  val AUTO_COMPACT = buildConfig[Boolean](
+    "autoOptimize.autoCompact",
     "false",
     _.toBoolean,
     _ => true,
