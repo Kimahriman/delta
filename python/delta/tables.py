@@ -1206,3 +1206,18 @@ class DeltaOptimizeBuilder(object):
             self._jbuilder.executeCompaction(),
             getattr(self._spark, "_wrapped", self._spark)  # type: ignore[attr-defined]
         )
+
+    @since(1.3)  # type: ignore[arg-type]
+    def executeZOrderBy(self, *cols: str) -> DataFrame:
+        """
+        Compact the small files in selected partitions.
+
+        :return: DataFrame containing the OPTIMIZE execution metrics
+        :rtype: pyspark.sql.DataFrame
+        """
+        if len(cols) == 1 and isinstance(cols[0], (list, tuple)):
+            cols = cols[0]  # type: ignore[assignment]
+        return DataFrame(
+            self._jbuilder.executeZOrderBy(_to_seq(self._spark._sc, cols)),
+            getattr(self._spark, "_wrapped", self._spark)  # type: ignore[attr-defined]
+        )

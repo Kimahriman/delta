@@ -14,116 +14,133 @@
 # limitations under the License.
 #
 
+from pathlib import Path
+import time
 import unittest
 import os
 from typing import List, Set, Dict, Optional, Any, Callable, Union, Tuple
 
-from pyspark.sql import DataFrame, Row
+from pyspark.sql import DataFrame, Row, SparkSession
 from pyspark.sql.column import _to_seq  # type: ignore[attr-defined]
-from pyspark.sql.functions import col, lit, expr
+from pyspark.sql.functions import col, lit, expr, regexp_replace
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, LongType, DataType
 from pyspark.sql.utils import AnalysisException, ParseException
+
+from chispa import assert_df_equality  # type: ignore[import]
+import pytest
 
 from delta.tables import DeltaTable, DeltaTableBuilder, DeltaOptimizeBuilder
 from delta.testing.utils import DeltaTestCase
 
+def __writeDeltaTable(spark: SparkSession, path: Path, datalist: List[Tuple[Any, Any]]) -> DeltaTable:
+    df = spark.createDataFrame(datalist, ["key", "value"])
+    df.write.format("delta").save(path.as_uri())
+    return DeltaTable.forPath(spark, path.as_uri())
+
+def __writeAsTable(spark: SparkSession, datalist: List[Tuple[Any, Any]], tblName: str) -> DeltaTable:
+    df = spark.createDataFrame(datalist, ["key", "value"])
+    df.write.format("delta").mode('overwrite').saveAsTable(tblName)
+    return DeltaTable.forName(spark, tblName)
+
+def __checkAnswer(spark: SparkSession,
+                    df: DataFrame,
+                    expectedAnswer: List[Any],
+                    schema: Union[StructType, List[str]] = ["key", "value"]) -> None:
+    if not expectedAnswer:
+        assert df.count() == 0
+        return
+    expectedDF = spark.createDataFrame(expectedAnswer, schema)
+    # time.sleep(60)
+    assert_df_equality(df.select('*'), expectedDF)
+
+def test_forPath(spark_session: SparkSession, tmp_path: Path) -> None:
+    __writeDeltaTable(spark_session, tmp_path, [('a', 1), ('b', 2), ('c', 3)])
+    dt = DeltaTable.forPath(spark_session, tmp_path.as_uri()).toDF()
+    __checkAnswer(spark_session, dt, [('a', 1), ('b', 2), ('c', 3)])
+
+def test_forName(spark_session: SparkSession) -> None:
+    __writeAsTable(spark_session, [('a', 1), ('b', 2), ('c', 3)], "test")
+    df = DeltaTable.forName(spark_session, "test").toDF()
+    __checkAnswer(spark_session, df, [('a', 1), ('b', 2), ('c', 3)])
+
+def test_delete(spark_session: SparkSession, tmp_path: Path) -> None:
+    dt = __writeDeltaTable(spark_session, tmp_path, [('a', 1), ('b', 2), ('c', 3), ('d', 4)])
+
+    # delete with condition as str
+    dt.delete("key = 'a'")
+    __checkAnswer(spark_session, dt.toDF(), [('b', 2), ('c', 3), ('d', 4)])
+
+    # dt = DeltaTable.forPath(spark_session, tmp_path.as_uri())
+    # delete with condition as Column
+    dt.delete(col("key") == lit("b"))
+    __checkAnswer(spark_session, dt.toDF(), [('c', 3), ('d', 4)])
+
+    # delete without condition
+    dt.delete()
+    assert dt.toDF().count() == 0
+
+    # bad args
+    with pytest.raises(TypeError):
+        dt.delete(condition=1)  # type: ignore[arg-type]
+
+def test_generate(spark_session: SparkSession, tmp_path: Path) -> None:
+    # create a delta table
+    numFiles = 10
+    path = tmp_path.as_uri()
+    spark_session.range(100).repartition(numFiles).write.format("delta").save(path)
+    dt = DeltaTable.forPath(spark_session, path)
+
+    # Generate the symlink format manifest
+    dt.generate("symlink_format_manifest")
+
+    # check the contents of the manifest
+    # NOTE: this is not a correctness test, we are testing correctness in the scala suite
+    manifestPath = os.path.join(tmp_path.as_posix(), "_symlink_format_manifest", "manifest")
+    files = []
+    with open(manifestPath) as f:
+        files = f.readlines()
+
+    # the number of files we write should equal the number of lines in the manifest
+    assert len(files) == numFiles
+
+def test_update(spark_session: SparkSession, tmp_path: Path) -> None:
+    dt = __writeDeltaTable(spark_session, tmp_path, [('a', 1), ('b', 2), ('c', 3), ('d', 4)])
+
+    # update with condition as str and with set exprs as str
+    dt.update("key = 'a' or key = 'b'", {"value": "1"})
+    __checkAnswer(spark_session, dt.toDF(), [('a', 1), ('b', 1), ('c', 3), ('d', 4)])
+
+    # update with condition as Column and with set exprs as Columns
+    dt.update(expr("key = 'a' or key = 'b'"), {"value": expr("0")})
+    __checkAnswer(spark_session, dt.toDF(), [('a', 0), ('b', 0), ('c', 3), ('d', 4)])
+
+    # update without condition
+    dt.update(set={"value": "200"})
+    __checkAnswer(spark_session, dt.toDF(), [('a', 200), ('b', 200), ('c', 200), ('d', 200)])
+
+    # bad args
+    with pytest.raises(ValueError, match = "cannot be None"):
+        dt.update({"value": "200"})  # type: ignore[call-overload]
+
+    with pytest.raises(ValueError, match = "cannot be None"):
+        dt.update(condition='a')  # type: ignore[call-overload]
+
+    with pytest.raises(TypeError, match = "must be a dict"):
+        dt.update(set=1)  # type: ignore[call-overload]
+
+    with pytest.raises(TypeError, match = "must be a Spark SQL Column or a string"):
+        dt.update(1, {})  # type: ignore[call-overload]
+
+    with pytest.raises(TypeError, match = "Values of dict in .* must contain only"):
+        dt.update(set={"value": 1})  # type: ignore[dict-item]
+
+    with pytest.raises(TypeError, match = "Keys of dict in .* must contain only"):
+        dt.update(set={1: ""})  # type: ignore[dict-item]
+
+    with pytest.raises(TypeError):
+        dt.update(set=1)  # type: ignore[call-overload]
 
 class DeltaTableTests(DeltaTestCase):
-
-    def test_forPath(self) -> None:
-        self.__writeDeltaTable([('a', 1), ('b', 2), ('c', 3)])
-        dt = DeltaTable.forPath(self.spark, self.tempFile).toDF()
-        self.__checkAnswer(dt, [('a', 1), ('b', 2), ('c', 3)])
-
-    def test_forName(self) -> None:
-        self.__writeAsTable([('a', 1), ('b', 2), ('c', 3)], "test")
-        df = DeltaTable.forName(self.spark, "test").toDF()
-        self.__checkAnswer(df, [('a', 1), ('b', 2), ('c', 3)])
-
-    def test_alias_and_toDF(self) -> None:
-        self.__writeDeltaTable([('a', 1), ('b', 2), ('c', 3)])
-        dt = DeltaTable.forPath(self.spark, self.tempFile).toDF()
-        self.__checkAnswer(
-            dt.alias("myTable").select('myTable.key', 'myTable.value'),
-            [('a', 1), ('b', 2), ('c', 3)])
-
-    def test_delete(self) -> None:
-        self.__writeDeltaTable([('a', 1), ('b', 2), ('c', 3), ('d', 4)])
-        dt = DeltaTable.forPath(self.spark, self.tempFile)
-
-        # delete with condition as str
-        dt.delete("key = 'a'")
-        self.__checkAnswer(dt.toDF(), [('b', 2), ('c', 3), ('d', 4)])
-
-        # delete with condition as Column
-        dt.delete(col("key") == lit("b"))
-        self.__checkAnswer(dt.toDF(), [('c', 3), ('d', 4)])
-
-        # delete without condition
-        dt.delete()
-        self.__checkAnswer(dt.toDF(), [])
-
-        # bad args
-        with self.assertRaises(TypeError):
-            dt.delete(condition=1)  # type: ignore[arg-type]
-
-    def test_generate(self) -> None:
-        # create a delta table
-        numFiles = 10
-        self.spark.range(100).repartition(numFiles).write.format("delta").save(self.tempFile)
-        dt = DeltaTable.forPath(self.spark, self.tempFile)
-
-        # Generate the symlink format manifest
-        dt.generate("symlink_format_manifest")
-
-        # check the contents of the manifest
-        # NOTE: this is not a correctness test, we are testing correctness in the scala suite
-        manifestPath = os.path.join(self.tempFile,
-                                    os.path.join("_symlink_format_manifest", "manifest"))
-        files = []
-        with open(manifestPath) as f:
-            files = f.readlines()
-
-        # the number of files we write should equal the number of lines in the manifest
-        assert(len(files) == numFiles)
-
-    def test_update(self) -> None:
-        self.__writeDeltaTable([('a', 1), ('b', 2), ('c', 3), ('d', 4)])
-        dt = DeltaTable.forPath(self.spark, self.tempFile)
-
-        # update with condition as str and with set exprs as str
-        dt.update("key = 'a' or key = 'b'", {"value": "1"})
-        self.__checkAnswer(dt.toDF(), [('a', 1), ('b', 1), ('c', 3), ('d', 4)])
-
-        # update with condition as Column and with set exprs as Columns
-        dt.update(expr("key = 'a' or key = 'b'"), {"value": expr("0")})
-        self.__checkAnswer(dt.toDF(), [('a', 0), ('b', 0), ('c', 3), ('d', 4)])
-
-        # update without condition
-        dt.update(set={"value": "200"})
-        self.__checkAnswer(dt.toDF(), [('a', 200), ('b', 200), ('c', 200), ('d', 200)])
-
-        # bad args
-        with self.assertRaisesRegex(ValueError, "cannot be None"):
-            dt.update({"value": "200"})  # type: ignore[call-overload]
-
-        with self.assertRaisesRegex(ValueError, "cannot be None"):
-            dt.update(condition='a')  # type: ignore[call-overload]
-
-        with self.assertRaisesRegex(TypeError, "must be a dict"):
-            dt.update(set=1)  # type: ignore[call-overload]
-
-        with self.assertRaisesRegex(TypeError, "must be a Spark SQL Column or a string"):
-            dt.update(1, {})  # type: ignore[call-overload]
-
-        with self.assertRaisesRegex(TypeError, "Values of dict in .* must contain only"):
-            dt.update(set={"value": 1})  # type: ignore[dict-item]
-
-        with self.assertRaisesRegex(TypeError, "Keys of dict in .* must contain only"):
-            dt.update(set={1: ""})  # type: ignore[dict-item]
-
-        with self.assertRaises(TypeError):
-            dt.update(set=1)  # type: ignore[call-overload]
 
     def test_merge(self) -> None:
         self.__writeDeltaTable([('a', 1), ('b', 2), ('c', 3), ('d', 4)])
@@ -908,6 +925,70 @@ class DeltaTableTests(DeltaTestCase):
         # test non-partition column
         def optimize() -> None:
             dt.optimize().where("value = 1").executeCompaction()
+        self.__intercept(optimize,
+                         "Predicate references non-partition column 'value'. "
+                         "Only the partition columns may be referenced: [key]")
+
+    def test_optimize_zorder(self) -> None:
+        # write an unoptimized delta table
+        df = self.spark.createDataFrame([("a", 1), ("a", 2)], ["key", "value"]).repartition(1)
+        df.write.format("delta").save(self.tempFile)
+        df = self.spark.createDataFrame([("a", 3), ("a", 4)], ["key", "value"]).repartition(1)
+        df.write.format("delta").save(self.tempFile, mode="append")
+        df = self.spark.createDataFrame([("b", 1), ("b", 2)], ["key", "value"]).repartition(1)
+        df.write.format("delta").save(self.tempFile, mode="append")
+
+        # create DeltaTable
+        dt = DeltaTable.forPath(self.spark, self.tempFile)
+
+        # execute bin compaction
+        optimizer = dt.optimize()
+        res = optimizer.executeZOrderBy("key", "value")
+        op_params = dt.history().first().operationParameters
+
+        # assertions
+        self.assertTrue(isinstance(optimizer, DeltaOptimizeBuilder))
+        self.assertTrue(isinstance(res, DataFrame))
+        self.assertEqual(1, res.first().metrics.numFilesAdded)
+        self.assertEqual(3, res.first().metrics.numFilesRemoved)
+        self.assertIsNotNone(res.first().metrics.zOrderStats)
+        self.assertEqual('[]', op_params['predicate'])
+
+        # test non-partition column
+        def optimize() -> None:
+            dt.optimize().where("key = 'a'").executeZOrderBy("key", "value")
+        self.__intercept(optimize,
+                         "Predicate references non-partition column 'key'. "
+                         "Only the partition columns may be referenced: []")
+
+    def test_optimize_zorder_w_partition_filter(self) -> None:
+        # write an unoptimized delta table
+        df = self.spark.createDataFrame([("a", 1), ("a", 2)], ["key", "value"]).repartition(1)
+        df.write.partitionBy("key").format("delta").save(self.tempFile)
+        df = self.spark.createDataFrame([("a", 3), ("a", 4)], ["key", "value"]).repartition(1)
+        df.write.partitionBy("key").format("delta").save(self.tempFile, mode="append")
+        df = self.spark.createDataFrame([("b", 1), ("b", 2)], ["key", "value"]).repartition(1)
+        df.write.partitionBy("key").format("delta").save(self.tempFile, mode="append")
+
+        # create DeltaTable
+        dt = DeltaTable.forPath(self.spark, self.tempFile)
+
+        # execute bin compaction
+        optimizer = dt.optimize().where("key = 'a'")
+        res = optimizer.executeZOrderBy("value")
+        op_params = dt.history().first().operationParameters
+
+        # assertions
+        self.assertTrue(isinstance(optimizer, DeltaOptimizeBuilder))
+        self.assertTrue(isinstance(res, DataFrame))
+        self.assertEqual(1, res.first().metrics.numFilesAdded)
+        self.assertEqual(2, res.first().metrics.numFilesRemoved)
+        self.assertIsNotNone(res.first().metrics.zOrderStats)
+        self.assertEqual('["(key = \'a\')"]', op_params['predicate'])
+
+        # test non-partition column
+        def optimize() -> None:
+            dt.optimize().where("value = 1").executeZOrderBy("value")
         self.__intercept(optimize,
                          "Predicate references non-partition column 'value'. "
                          "Only the partition columns may be referenced: [key]")
