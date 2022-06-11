@@ -1218,6 +1218,6 @@ class DeltaOptimizeBuilder(object):
         if len(cols) == 1 and isinstance(cols[0], (list, tuple)):
             cols = cols[0]  # type: ignore[assignment]
         return DataFrame(
-            self._jbuilder.executeZOrderBy(_to_seq(self._spark._sc, cols)),
+            self._jbuilder.executeZOrderBy(_to_seq(self._spark._sc, cols)), # type: ignore[attr-defined]
             getattr(self._spark, "_wrapped", self._spark)  # type: ignore[attr-defined]
         )
