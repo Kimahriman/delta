@@ -15,78 +15,67 @@
 #
 
 from typing import Any, Callable, TYPE_CHECKING
-import unittest
+
+import pytest
 
 import delta.exceptions as exceptions
 
-from delta.testing.utils import DeltaTestCase
+from pyspark.sql import SparkSession
 from pyspark.sql.utils import AnalysisException, IllegalArgumentException
 
 if TYPE_CHECKING:
     from py4j.java_gateway import JVMView  # type: ignore[import]
 
+@pytest.fixture(scope='session')
+def jvm(spark_session: SparkSession) -> "JVMView":
+    return spark_session.sparkContext._jvm
 
-class DeltaExceptionTests(DeltaTestCase):
+def _raise_concurrent_exception(jvm: "JVMView", exception_type: Callable[[Any], Any]) -> None:
+    e = exception_type("")
+    jvm.scala.util.Failure(e).get()
 
-    def setUp(self) -> None:
-        super(DeltaExceptionTests, self).setUp()
-        self.jvm: "JVMView" = self.spark.sparkContext._jvm  # type: ignore[attr-defined]
+def test_capture_concurrent_write_exception(jvm: "JVMView") -> None:
+    e = jvm.io.delta.exceptions.ConcurrentWriteException
+    pytest.raises(exceptions.ConcurrentWriteException,
+                        lambda: _raise_concurrent_exception(jvm, e))
 
-    def _raise_concurrent_exception(self, exception_type: Callable[[Any], Any]) -> None:
-        e = exception_type("")
-        self.jvm.scala.util.Failure(e).get()
+def test_capture_metadata_changed_exception(jvm: "JVMView") -> None:
+    e = jvm.io.delta.exceptions.MetadataChangedException
+    pytest.raises(exceptions.MetadataChangedException,
+                        lambda: _raise_concurrent_exception(jvm, e))
 
-    def test_capture_concurrent_write_exception(self) -> None:
-        e = self.jvm.io.delta.exceptions.ConcurrentWriteException
-        self.assertRaises(exceptions.ConcurrentWriteException,
-                          lambda: self._raise_concurrent_exception(e))
+def test_capture_protocol_changed_exception(jvm: "JVMView") -> None:
+    e = jvm.io.delta.exceptions.ProtocolChangedException
+    pytest.raises(exceptions.ProtocolChangedException,
+                        lambda: _raise_concurrent_exception(jvm, e))
 
-    def test_capture_metadata_changed_exception(self) -> None:
-        e = self.jvm.io.delta.exceptions.MetadataChangedException
-        self.assertRaises(exceptions.MetadataChangedException,
-                          lambda: self._raise_concurrent_exception(e))
+def test_capture_concurrent_append_exception(jvm: "JVMView") -> None:
+    e = jvm.io.delta.exceptions.ConcurrentAppendException
+    pytest.raises(exceptions.ConcurrentAppendException,
+                        lambda: _raise_concurrent_exception(jvm, e))
 
-    def test_capture_protocol_changed_exception(self) -> None:
-        e = self.jvm.io.delta.exceptions.ProtocolChangedException
-        self.assertRaises(exceptions.ProtocolChangedException,
-                          lambda: self._raise_concurrent_exception(e))
+def test_capture_concurrent_delete_read_exception(jvm: "JVMView") -> None:
+    e = jvm.io.delta.exceptions.ConcurrentDeleteReadException
+    pytest.raises(exceptions.ConcurrentDeleteReadException,
+                        lambda: _raise_concurrent_exception(jvm, e))
 
-    def test_capture_concurrent_append_exception(self) -> None:
-        e = self.jvm.io.delta.exceptions.ConcurrentAppendException
-        self.assertRaises(exceptions.ConcurrentAppendException,
-                          lambda: self._raise_concurrent_exception(e))
+def test_capture_concurrent_delete_delete_exception(jvm: "JVMView") -> None:
+    e = jvm.io.delta.exceptions.ConcurrentDeleteDeleteException
+    pytest.raises(exceptions.ConcurrentDeleteDeleteException,
+                        lambda: _raise_concurrent_exception(jvm, e))
 
-    def test_capture_concurrent_delete_read_exception(self) -> None:
-        e = self.jvm.io.delta.exceptions.ConcurrentDeleteReadException
-        self.assertRaises(exceptions.ConcurrentDeleteReadException,
-                          lambda: self._raise_concurrent_exception(e))
+def test_capture_concurrent_transaction_exception(jvm: "JVMView") -> None:
+    e = jvm.io.delta.exceptions.ConcurrentTransactionException
+    pytest.raises(exceptions.ConcurrentTransactionException,
+                        lambda: _raise_concurrent_exception(jvm, e))
 
-    def test_capture_concurrent_delete_delete_exception(self) -> None:
-        e = self.jvm.io.delta.exceptions.ConcurrentDeleteDeleteException
-        self.assertRaises(exceptions.ConcurrentDeleteDeleteException,
-                          lambda: self._raise_concurrent_exception(e))
+def test_capture_delta_analysis_exception(jvm: "JVMView") -> None:
+    e = jvm.org.apache.spark.sql.delta.DeltaErrors.invalidColumnName
+    pytest.raises(AnalysisException,
+                        lambda: jvm.scala.util.Failure(e("invalid")).get())
 
-    def test_capture_concurrent_transaction_exception(self) -> None:
-        e = self.jvm.io.delta.exceptions.ConcurrentTransactionException
-        self.assertRaises(exceptions.ConcurrentTransactionException,
-                          lambda: self._raise_concurrent_exception(e))
-
-    def test_capture_delta_analysis_exception(self) -> None:
-        e = self.jvm.org.apache.spark.sql.delta.DeltaErrors.invalidColumnName
-        self.assertRaises(AnalysisException,
-                          lambda: self.jvm.scala.util.Failure(e("invalid")).get())
-
-    def test_capture_delta_illegal_argument_exception(self) -> None:
-        e = self.jvm.org.apache.spark.sql.delta.DeltaErrors
-        method = e.throwDeltaIllegalArgumentException
-        self.assertRaises(IllegalArgumentException,
-                          lambda: self.jvm.scala.util.Failure(method()).get())
-
-
-if __name__ == "__main__":
-    try:
-        import xmlrunner
-        testRunner = xmlrunner.XMLTestRunner(output='target/test-reports', verbosity=4)
-    except ImportError:
-        testRunner = None
-    unittest.main(testRunner=testRunner, verbosity=4)
+def test_capture_delta_illegal_argument_exception(jvm: "JVMView") -> None:
+    e = jvm.org.apache.spark.sql.delta.DeltaErrors
+    method = e.throwDeltaIllegalArgumentException
+    pytest.raises(IllegalArgumentException,
+                        lambda: jvm.scala.util.Failure(method()).get())

@@ -15,7 +15,6 @@
 #
 
 from pathlib import Path
-import time
 import unittest
 import os
 from typing import List, Set, Dict, Optional, Any, Callable, Union, Tuple
@@ -36,6 +35,15 @@ def __writeDeltaTable(spark: SparkSession, path: Path, datalist: List[Tuple[Any,
     df = spark.createDataFrame(datalist, ["key", "value"])
     df.write.format("delta").save(path.as_uri())
     return DeltaTable.forPath(spark, path.as_uri())
+
+def __overwriteDeltaTable(spark: SparkSession, path: Path, datalist: List[Tuple[Any, Any]],
+                              schema: Union[StructType, List[str]] = ["key", "value"],
+                              overwriteSchema: str = 'false') -> None:
+    df = spark.createDataFrame(datalist, schema)
+    df.write.format("delta") \
+        .option('overwriteSchema', overwriteSchema) \
+        .mode("overwrite") \
+        .save(path.as_uri())
 
 def __writeAsTable(spark: SparkSession, datalist: List[Tuple[Any, Any]], tblName: str) -> DeltaTable:
     df = spark.createDataFrame(datalist, ["key", "value"])
@@ -140,191 +148,190 @@ def test_update(spark_session: SparkSession, tmp_path: Path) -> None:
     with pytest.raises(TypeError):
         dt.update(set=1)  # type: ignore[call-overload]
 
+def test_merge(spark_session: SparkSession, tmp_path: Path) -> None:
+    dt = __writeDeltaTable(spark_session, tmp_path, [('a', 1), ('b', 2), ('c', 3), ('d', 4)])
+    source = spark_session.createDataFrame([('a', -1), ('b', 0), ('e', -5), ('f', -6)], ["k", "v"])
+
+    def reset_table() -> None:
+        __overwriteDeltaTable(spark_session, tmp_path, [('a', 1), ('b', 2), ('c', 3), ('d', 4)])
+
+    # ============== Test basic syntax ==============
+
+    # String expressions in merge condition and dicts
+    reset_table()
+    dt.merge(source, "key = k") \
+        .whenMatchedUpdate(set={"value": "v + 0"}) \
+        .whenNotMatchedInsert(values={"key": "k", "value": "v + 0"}) \
+        .execute()
+    __checkAnswer(spark_session, dt.toDF(),
+                        ([('a', -1), ('b', 0), ('c', 3), ('d', 4), ('e', -5), ('f', -6)]))
+
+    # Column expressions in merge condition and dicts
+    reset_table()
+    dt.merge(source, expr("key = k")) \
+        .whenMatchedUpdate(set={"value": col("v") + 0}) \
+        .whenNotMatchedInsert(values={"key": "k", "value": col("v") + 0}) \
+        .execute()
+    __checkAnswer(spark_session, dt.toDF(),
+                        ([('a', -1), ('b', 0), ('c', 3), ('d', 4), ('e', -5), ('f', -6)]))
+
+    # ============== Test clause conditions ==============
+
+    # String expressions in all conditions and dicts
+    reset_table()
+    dt.merge(source, "key = k") \
+        .whenMatchedUpdate(condition="k = 'a'", set={"value": "v + 0"}) \
+        .whenMatchedDelete(condition="k = 'b'") \
+        .whenNotMatchedInsert(condition="k = 'e'", values={"key": "k", "value": "v + 0"}) \
+        .execute()
+    __checkAnswer(spark_session, dt.toDF(), ([('a', -1), ('c', 3), ('d', 4), ('e', -5)]))
+
+    # Column expressions in all conditions and dicts
+    reset_table()
+    dt.merge(source, expr("key = k")) \
+        .whenMatchedUpdate(
+            condition=expr("k = 'a'"),
+            set={"value": col("v") + 0}) \
+        .whenMatchedDelete(condition=expr("k = 'b'")) \
+        .whenNotMatchedInsert(
+            condition=expr("k = 'e'"),
+            values={"key": "k", "value": col("v") + 0}) \
+        .execute()
+    __checkAnswer(spark_session, dt.toDF(), ([('a', -1), ('c', 3), ('d', 4), ('e', -5)]))
+
+    # Positional arguments
+    reset_table()
+    dt.merge(source, "key = k") \
+        .whenMatchedUpdate("k = 'a'", {"value": "v + 0"}) \
+        .whenMatchedDelete("k = 'b'") \
+        .whenNotMatchedInsert("k = 'e'", {"key": "k", "value": "v + 0"}) \
+        .execute()
+    __checkAnswer(spark_session, dt.toDF(), ([('a', -1), ('c', 3), ('d', 4), ('e', -5)]))
+
+    # ============== Test updateAll/insertAll ==============
+
+    # No clause conditions and insertAll/updateAll + aliases
+    reset_table()
+    dt.alias("t") \
+        .merge(source.toDF("key", "value").alias("s"), expr("t.key = s.key")) \
+        .whenMatchedUpdateAll() \
+        .whenNotMatchedInsertAll() \
+        .execute()
+    __checkAnswer(spark_session, dt.toDF(),
+                        ([('a', -1), ('b', 0), ('c', 3), ('d', 4), ('e', -5), ('f', -6)]))
+
+    # String expressions in all clause conditions and insertAll/updateAll + aliases
+    reset_table()
+    dt.alias("t") \
+        .merge(source.toDF("key", "value").alias("s"), "s.key = t.key") \
+        .whenMatchedUpdateAll("s.key = 'a'") \
+        .whenNotMatchedInsertAll("s.key = 'e'") \
+        .execute()
+    __checkAnswer(spark_session, dt.toDF(), ([('a', -1), ('b', 2), ('c', 3), ('d', 4), ('e', -5)]))
+
+    # Column expressions in all clause conditions and insertAll/updateAll + aliases
+    reset_table()
+    dt.alias("t") \
+        .merge(source.toDF("key", "value").alias("s"), expr("t.key = s.key")) \
+        .whenMatchedUpdateAll(expr("s.key = 'a'")) \
+        .whenNotMatchedInsertAll(expr("s.key = 'e'")) \
+        .execute()
+    __checkAnswer(spark_session, dt.toDF(), ([('a', -1), ('b', 2), ('c', 3), ('d', 4), ('e', -5)]))
+
+    # ============== Test bad args ==============
+    # ---- bad args in merge()
+    with pytest.raises(TypeError, match = "must be DataFrame"):
+        dt.merge(1, "key = k")  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match = "must be a Spark SQL Column or a string"):
+        dt.merge(source, 1)  # type: ignore[arg-type]
+
+    # ---- bad args in whenMatchedUpdate()
+    with pytest.raises(ValueError, match = "cannot be None"):
+        (dt  # type: ignore[call-overload]
+            .merge(source, "key = k")
+            .whenMatchedUpdate({"value": "v"}))
+
+    with pytest.raises(ValueError, match = "cannot be None"):
+        (dt  # type: ignore[call-overload]
+            .merge(source, "key = k")
+            .whenMatchedUpdate(1))
+
+    with pytest.raises(ValueError, match = "cannot be None"):
+        (dt  # type: ignore[call-overload]
+            .merge(source, "key = k")
+            .whenMatchedUpdate(condition="key = 'a'"))
+
+    with pytest.raises(TypeError, match = "must be a Spark SQL Column or a string"):
+        (dt  # type: ignore[call-overload]
+            .merge(source, "key = k")
+            .whenMatchedUpdate(1, {"value": "v"}))
+
+    with pytest.raises(TypeError, match = "must be a dict"):
+        (dt  # type: ignore[call-overload]
+            .merge(source, "key = k")
+            .whenMatchedUpdate("k = 'a'", 1))
+
+    with pytest.raises(TypeError, match = "Values of dict in .* must contain only"):
+        (dt
+            .merge(source, "key = k")
+            .whenMatchedUpdate(set={"value": 1}))  # type: ignore[dict-item]
+
+    with pytest.raises(TypeError, match = "Keys of dict in .* must contain only"):
+        (dt
+            .merge(source, "key = k")
+            .whenMatchedUpdate(set={1: ""}))  # type: ignore[dict-item]
+
+    with pytest.raises(TypeError):
+        (dt  # type: ignore[call-overload]
+            .merge(source, "key = k")
+            .whenMatchedUpdate(set="k = 'a'", condition={"value": 1}))
+
+    # bad args in whenMatchedDelete()
+    with pytest.raises(TypeError, match = "must be a Spark SQL Column or a string"):
+        dt.merge(source, "key = k").whenMatchedDelete(1)  # type: ignore[arg-type]
+
+    # ---- bad args in whenNotMatchedInsert()
+    with pytest.raises(ValueError, match = "cannot be None"):
+        (dt  # type: ignore[call-overload]
+            .merge(source, "key = k")
+            .whenNotMatchedInsert({"value": "v"}))
+
+    with pytest.raises(ValueError, match = "cannot be None"):
+        dt.merge(source, "key = k").whenNotMatchedInsert(1)  # type: ignore[call-overload]
+
+    with pytest.raises(ValueError, match = "cannot be None"):
+        (dt  # type: ignore[call-overload]
+            .merge(source, "key = k")
+            .whenNotMatchedInsert(condition="key = 'a'"))
+
+    with pytest.raises(TypeError, match = "must be a Spark SQL Column or a string"):
+        (dt  # type: ignore[call-overload]
+            .merge(source, "key = k")
+            .whenNotMatchedInsert(1, {"value": "v"}))
+
+    with pytest.raises(TypeError, match = "must be a dict"):
+        (dt  # type: ignore[call-overload]
+            .merge(source, "key = k")
+            .whenNotMatchedInsert("k = 'a'", 1))
+
+    with pytest.raises(TypeError, match = "Values of dict in .* must contain only"):
+        (dt
+            .merge(source, "key = k")
+            .whenNotMatchedInsert(values={"value": 1}))  # type: ignore[dict-item]
+
+    with pytest.raises(TypeError, match = "Keys of dict in .* must contain only"):
+        (dt
+            .merge(source, "key = k")
+            .whenNotMatchedInsert(values={1: "value"}))  # type: ignore[dict-item]
+
+    with pytest.raises(TypeError):
+        (dt  # type: ignore[call-overload]
+            .merge(source, "key = k")
+            .whenNotMatchedInsert(values="k = 'a'", condition={"value": 1}))
+
 class DeltaTableTests(DeltaTestCase):
 
-    def test_merge(self) -> None:
-        self.__writeDeltaTable([('a', 1), ('b', 2), ('c', 3), ('d', 4)])
-        source = self.spark.createDataFrame([('a', -1), ('b', 0), ('e', -5), ('f', -6)], ["k", "v"])
-
-        def reset_table() -> None:
-            self.__overwriteDeltaTable([('a', 1), ('b', 2), ('c', 3), ('d', 4)])
-
-        dt = DeltaTable.forPath(self.spark, self.tempFile)
-
-        # ============== Test basic syntax ==============
-
-        # String expressions in merge condition and dicts
-        reset_table()
-        dt.merge(source, "key = k") \
-            .whenMatchedUpdate(set={"value": "v + 0"}) \
-            .whenNotMatchedInsert(values={"key": "k", "value": "v + 0"}) \
-            .execute()
-        self.__checkAnswer(dt.toDF(),
-                           ([('a', -1), ('b', 0), ('c', 3), ('d', 4), ('e', -5), ('f', -6)]))
-
-        # Column expressions in merge condition and dicts
-        reset_table()
-        dt.merge(source, expr("key = k")) \
-            .whenMatchedUpdate(set={"value": col("v") + 0}) \
-            .whenNotMatchedInsert(values={"key": "k", "value": col("v") + 0}) \
-            .execute()
-        self.__checkAnswer(dt.toDF(),
-                           ([('a', -1), ('b', 0), ('c', 3), ('d', 4), ('e', -5), ('f', -6)]))
-
-        # ============== Test clause conditions ==============
-
-        # String expressions in all conditions and dicts
-        reset_table()
-        dt.merge(source, "key = k") \
-            .whenMatchedUpdate(condition="k = 'a'", set={"value": "v + 0"}) \
-            .whenMatchedDelete(condition="k = 'b'") \
-            .whenNotMatchedInsert(condition="k = 'e'", values={"key": "k", "value": "v + 0"}) \
-            .execute()
-        self.__checkAnswer(dt.toDF(), ([('a', -1), ('c', 3), ('d', 4), ('e', -5)]))
-
-        # Column expressions in all conditions and dicts
-        reset_table()
-        dt.merge(source, expr("key = k")) \
-            .whenMatchedUpdate(
-                condition=expr("k = 'a'"),
-                set={"value": col("v") + 0}) \
-            .whenMatchedDelete(condition=expr("k = 'b'")) \
-            .whenNotMatchedInsert(
-                condition=expr("k = 'e'"),
-                values={"key": "k", "value": col("v") + 0}) \
-            .execute()
-        self.__checkAnswer(dt.toDF(), ([('a', -1), ('c', 3), ('d', 4), ('e', -5)]))
-
-        # Positional arguments
-        reset_table()
-        dt.merge(source, "key = k") \
-            .whenMatchedUpdate("k = 'a'", {"value": "v + 0"}) \
-            .whenMatchedDelete("k = 'b'") \
-            .whenNotMatchedInsert("k = 'e'", {"key": "k", "value": "v + 0"}) \
-            .execute()
-        self.__checkAnswer(dt.toDF(), ([('a', -1), ('c', 3), ('d', 4), ('e', -5)]))
-
-        # ============== Test updateAll/insertAll ==============
-
-        # No clause conditions and insertAll/updateAll + aliases
-        reset_table()
-        dt.alias("t") \
-            .merge(source.toDF("key", "value").alias("s"), expr("t.key = s.key")) \
-            .whenMatchedUpdateAll() \
-            .whenNotMatchedInsertAll() \
-            .execute()
-        self.__checkAnswer(dt.toDF(),
-                           ([('a', -1), ('b', 0), ('c', 3), ('d', 4), ('e', -5), ('f', -6)]))
-
-        # String expressions in all clause conditions and insertAll/updateAll + aliases
-        reset_table()
-        dt.alias("t") \
-            .merge(source.toDF("key", "value").alias("s"), "s.key = t.key") \
-            .whenMatchedUpdateAll("s.key = 'a'") \
-            .whenNotMatchedInsertAll("s.key = 'e'") \
-            .execute()
-        self.__checkAnswer(dt.toDF(), ([('a', -1), ('b', 2), ('c', 3), ('d', 4), ('e', -5)]))
-
-        # Column expressions in all clause conditions and insertAll/updateAll + aliases
-        reset_table()
-        dt.alias("t") \
-            .merge(source.toDF("key", "value").alias("s"), expr("t.key = s.key")) \
-            .whenMatchedUpdateAll(expr("s.key = 'a'")) \
-            .whenNotMatchedInsertAll(expr("s.key = 'e'")) \
-            .execute()
-        self.__checkAnswer(dt.toDF(), ([('a', -1), ('b', 2), ('c', 3), ('d', 4), ('e', -5)]))
-
-        # ============== Test bad args ==============
-        # ---- bad args in merge()
-        with self.assertRaisesRegex(TypeError, "must be DataFrame"):
-            dt.merge(1, "key = k")  # type: ignore[arg-type]
-
-        with self.assertRaisesRegex(TypeError, "must be a Spark SQL Column or a string"):
-            dt.merge(source, 1)  # type: ignore[arg-type]
-
-        # ---- bad args in whenMatchedUpdate()
-        with self.assertRaisesRegex(ValueError, "cannot be None"):
-            (dt  # type: ignore[call-overload]
-                .merge(source, "key = k")
-                .whenMatchedUpdate({"value": "v"}))
-
-        with self.assertRaisesRegex(ValueError, "cannot be None"):
-            (dt  # type: ignore[call-overload]
-                .merge(source, "key = k")
-                .whenMatchedUpdate(1))
-
-        with self.assertRaisesRegex(ValueError, "cannot be None"):
-            (dt  # type: ignore[call-overload]
-                .merge(source, "key = k")
-                .whenMatchedUpdate(condition="key = 'a'"))
-
-        with self.assertRaisesRegex(TypeError, "must be a Spark SQL Column or a string"):
-            (dt  # type: ignore[call-overload]
-                .merge(source, "key = k")
-                .whenMatchedUpdate(1, {"value": "v"}))
-
-        with self.assertRaisesRegex(TypeError, "must be a dict"):
-            (dt  # type: ignore[call-overload]
-                .merge(source, "key = k")
-                .whenMatchedUpdate("k = 'a'", 1))
-
-        with self.assertRaisesRegex(TypeError, "Values of dict in .* must contain only"):
-            (dt
-                .merge(source, "key = k")
-                .whenMatchedUpdate(set={"value": 1}))  # type: ignore[dict-item]
-
-        with self.assertRaisesRegex(TypeError, "Keys of dict in .* must contain only"):
-            (dt
-                .merge(source, "key = k")
-                .whenMatchedUpdate(set={1: ""}))  # type: ignore[dict-item]
-
-        with self.assertRaises(TypeError):
-            (dt  # type: ignore[call-overload]
-                .merge(source, "key = k")
-                .whenMatchedUpdate(set="k = 'a'", condition={"value": 1}))
-
-        # bad args in whenMatchedDelete()
-        with self.assertRaisesRegex(TypeError, "must be a Spark SQL Column or a string"):
-            dt.merge(source, "key = k").whenMatchedDelete(1)  # type: ignore[arg-type]
-
-        # ---- bad args in whenNotMatchedInsert()
-        with self.assertRaisesRegex(ValueError, "cannot be None"):
-            (dt  # type: ignore[call-overload]
-                .merge(source, "key = k")
-                .whenNotMatchedInsert({"value": "v"}))
-
-        with self.assertRaisesRegex(ValueError, "cannot be None"):
-            dt.merge(source, "key = k").whenNotMatchedInsert(1)  # type: ignore[call-overload]
-
-        with self.assertRaisesRegex(ValueError, "cannot be None"):
-            (dt  # type: ignore[call-overload]
-                .merge(source, "key = k")
-                .whenNotMatchedInsert(condition="key = 'a'"))
-
-        with self.assertRaisesRegex(TypeError, "must be a Spark SQL Column or a string"):
-            (dt  # type: ignore[call-overload]
-                .merge(source, "key = k")
-                .whenNotMatchedInsert(1, {"value": "v"}))
-
-        with self.assertRaisesRegex(TypeError, "must be a dict"):
-            (dt  # type: ignore[call-overload]
-                .merge(source, "key = k")
-                .whenNotMatchedInsert("k = 'a'", 1))
-
-        with self.assertRaisesRegex(TypeError, "Values of dict in .* must contain only"):
-            (dt
-                .merge(source, "key = k")
-                .whenNotMatchedInsert(values={"value": 1}))  # type: ignore[dict-item]
-
-        with self.assertRaisesRegex(TypeError, "Keys of dict in .* must contain only"):
-            (dt
-                .merge(source, "key = k")
-                .whenNotMatchedInsert(values={1: "value"}))  # type: ignore[dict-item]
-
-        with self.assertRaises(TypeError):
-            (dt  # type: ignore[call-overload]
-                .merge(source, "key = k")
-                .whenNotMatchedInsert(values="k = 'a'", condition={"value": 1}))
 
     def test_history(self) -> None:
         self.__writeDeltaTable([('a', 1), ('b', 2), ('c', 3)])
