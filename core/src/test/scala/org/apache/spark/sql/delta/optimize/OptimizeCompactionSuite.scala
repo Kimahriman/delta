@@ -33,6 +33,7 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.functions.lit
 import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.SparkException
 
 /**
  * Base class containing tests for Delta table Optimize (file compaction)
@@ -434,6 +435,40 @@ trait OptimizeCompactionSuiteBase extends QueryTest
       val files = groupInputFilesByPartition(df.inputFiles, deltaLog)
       assert(files.filter(_._1._1 == part).minBy(_._2.length)._1 === (part, "3"),
         "part 3 should have been optimized and have least amount of files")
+    }
+  }
+
+  test("optimize with partial failure still succeeds") {
+    withTempDir { tempDir =>
+      val baseDf = Seq(("a", 1), ("b", 2)).toDF("key", "value")
+
+      def write(mode: String = "append"): Unit = {
+        baseDf.write
+          .format("delta")
+          .partitionBy("key")
+          .mode(mode)
+          .save(tempDir.getAbsolutePath)
+      }
+
+      write()
+      write()
+
+      new File(tempDir, "key=a").listFiles().foreach(_.delete())
+
+      // Shouldn't throw an exception
+      executeOptimizePath(tempDir.getAbsolutePath)
+
+      write("overwrite")
+      write()
+
+      new File(tempDir, "key=a").listFiles().foreach(_.delete())
+      new File(tempDir, "key=b").listFiles().foreach(_.delete())
+
+      // Every job failing should throw an exception
+      val e = intercept[SparkException] {
+        executeOptimizePath(tempDir.getAbsolutePath)
+      }
+      assert(e.getCause.getMessage.contains("does not exist"))
     }
   }
 

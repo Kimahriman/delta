@@ -177,12 +177,26 @@ class OptimizeExecutor(
       val partitionsToCompact = filesToProcess.groupBy(_.partitionValues).toSeq
 
       val jobs = groupFilesIntoBins(partitionsToCompact, maxFileSize)
+      val failures = new ArrayBuffer[(Map[String, String], Throwable)]
 
       val maxThreads =
         sparkSession.sessionState.conf.getConf(DeltaSQLConf.DELTA_OPTIMIZE_MAX_THREADS)
       val updates = ThreadUtils.parmap(jobs, "OptimizeJob", maxThreads) { partitionBinGroup =>
-        runOptimizeBinJob(txn, partitionBinGroup._1, partitionBinGroup._2, maxFileSize)
+        try {
+          runOptimizeBinJob(txn, partitionBinGroup._1, partitionBinGroup._2, maxFileSize)
+        } catch {
+          case e: Throwable =>
+            logError(s"Failed to optimize partition ${partitionBinGroup._1}", e)
+            failures += ((partitionBinGroup._1, e))
+            Seq.empty
+        }
       }.flatten
+
+      if (jobs.length == failures.length) {
+        // All jobs failed
+        logError("All jobs failed to optimize")
+        throw failures(0)._2
+      }
 
       val addedFiles = updates.collect { case a: AddFile => a }
       val removedFiles = updates.collect { case r: RemoveFile => r }
