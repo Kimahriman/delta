@@ -192,9 +192,8 @@ class OptimizeExecutor(
         }
       }.flatten
 
-      if (jobs.length == failures.length) {
-        // All jobs failed
-        logError("All jobs failed to optimize")
+      if (jobs.nonEmpty && jobs.length == failures.length) {
+        logError("All jobs failed during optimize")
         throw failures(0)._2
       }
 
