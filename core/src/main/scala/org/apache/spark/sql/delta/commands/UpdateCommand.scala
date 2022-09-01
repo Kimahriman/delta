@@ -24,7 +24,7 @@ import org.apache.spark.sql.delta.files.{TahoeBatchFileIndex, TahoeFileIndex}
 import org.apache.hadoop.fs.Path
 
 import org.apache.spark.SparkContext
-import org.apache.spark.sql.{Column, DataFrame, Dataset, Row, SparkSession}
+import org.apache.spark.sql.{Column, DataFrame, Dataset, Observation, Row, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, If, Literal}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
@@ -33,7 +33,7 @@ import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.metric.SQLMetrics.{createMetric, createTimingMetric}
-import org.apache.spark.sql.functions.{array, col, explode, input_file_name, lit, struct}
+import org.apache.spark.sql.functions.{array, col, count, explode, input_file_name, lit, struct}
 import org.apache.spark.sql.types.LongType
 
 /**
@@ -130,19 +130,21 @@ case class UpdateCommand(
       val newTarget = DeltaTableUtils.replaceFileIndex(target, fileIndex)
       val data = Dataset.ofRows(sparkSession, newTarget)
       val updatedRowCount = metrics("numUpdatedRows")
-      val updatedRowUdf = DeltaUDF.boolean { () =>
-        updatedRowCount += 1
-        true
-      }.asNondeterministic()
+
+      val observation = Observation("update")
+
       val pathsToRewrite =
         withStatusCode("DELTA", UpdateCommand.FINDING_TOUCHED_FILES_MSG) {
           data.filter(new Column(updateCondition))
+            .observe(observation, count(lit(1)).as("numUpdatedRows"))
             .select(input_file_name())
-            .filter(updatedRowUdf())
             .distinct()
             .as[String]
             .collect()
         }
+
+      val updateMetrics = observation.get
+      updatedRowCount += updateMetrics.get("numUpdatedRows").get.asInstanceOf[Long]
 
       scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
 
