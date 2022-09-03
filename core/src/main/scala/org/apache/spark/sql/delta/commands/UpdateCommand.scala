@@ -143,8 +143,12 @@ case class UpdateCommand(
             .collect()
         }
 
-      val updateMetrics = observation.get
-      updatedRowCount += updateMetrics.get("numUpdatedRows").get.asInstanceOf[Long]
+      // If no files need to be updated, the observation never gets initialized,
+      // so we can't get the result as it just hangs forever.
+      if (pathsToRewrite.nonEmpty) {
+        val updateMetrics = observation.get
+        updatedRowCount += updateMetrics.get("numUpdatedRows").get.asInstanceOf[Long]
+      }
 
       scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
 
