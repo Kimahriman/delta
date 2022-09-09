@@ -143,8 +143,8 @@ case class UpdateCommand(
             .collect()
         }
 
-      // If no files need to be updated, the observation never gets initialized,
-      // so we can't get the result as it just hangs forever.
+      // Only get the metrics if there are files to be updated. If there are no files that need
+      // to be updated, the observation may never get initialized and `.get` will hang.
       if (pathsToRewrite.nonEmpty) {
         val updateMetrics = observation.get
         updatedRowCount += updateMetrics.get("numUpdatedRows").get.asInstanceOf[Long]
