@@ -21,10 +21,11 @@ import org.apache.spark.sql.delta.{DeltaConfigs, DeltaLog, DeltaOperations, Delt
 import org.apache.spark.sql.delta.actions.{AddCDCFile, AddFile, FileAction}
 import org.apache.spark.sql.delta.commands.cdc.CDCReader.{CDC_TYPE_COLUMN_NAME, CDC_TYPE_NOT_CDC, CDC_TYPE_UPDATE_POSTIMAGE, CDC_TYPE_UPDATE_PREIMAGE}
 import org.apache.spark.sql.delta.files.{TahoeBatchFileIndex, TahoeFileIndex}
+import org.apache.spark.sql.delta.util.MetricUtils
 import org.apache.hadoop.fs.Path
 
 import org.apache.spark.SparkContext
-import org.apache.spark.sql.{Column, DataFrame, Dataset, Observation, Row, SparkSession}
+import org.apache.spark.sql.{Column, DataFrame, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, If, Literal}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
@@ -131,23 +132,19 @@ case class UpdateCommand(
       val data = Dataset.ofRows(sparkSession, newTarget)
       val updatedRowCount = metrics("numUpdatedRows")
 
-      val observation = Observation("update")
-
-      val pathsToRewrite =
+      val (pathsToRewrite, observedMetrics) =
         withStatusCode("DELTA", UpdateCommand.FINDING_TOUCHED_FILES_MSG) {
-          data.filter(new Column(updateCondition))
-            .observe(observation, count(lit(1)).as("numUpdatedRows"))
-            .select(input_file_name())
-            .distinct()
-            .as[String]
-            .collect()
+          MetricUtils.collectWithMetrics {
+            data.filter(new Column(updateCondition))
+              .observe("update", count(lit(1)).as("numUpdatedRows"))
+              .select(input_file_name())
+              .distinct()
+              .as[String]
+          }
         }
 
-      // Only get the metrics if there are files to be updated. If there are no files that need
-      // to be updated, the observation may never get initialized and `.get` will hang.
-      if (pathsToRewrite.nonEmpty) {
-        val updateMetrics = observation.get
-        updatedRowCount += updateMetrics.get("numUpdatedRows").get.asInstanceOf[Long]
+      observedMetrics.get("update").foreach { updateMetrics =>
+        updatedRowCount += updateMetrics.getAs[Long]("numUpdatedRows")
       }
 
       scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
