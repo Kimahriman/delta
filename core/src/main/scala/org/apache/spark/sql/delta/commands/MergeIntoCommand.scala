@@ -26,7 +26,7 @@ import org.apache.spark.sql.delta.actions.{AddCDCFile, AddFile, FileAction}
 import org.apache.spark.sql.delta.files._
 import org.apache.spark.sql.delta.schema.{ImplicitMetadataOperation, SchemaUtils}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
-import org.apache.spark.sql.delta.util.{AnalysisHelper, SetAccumulator}
+import org.apache.spark.sql.delta.util.{AnalysisHelper, MetricUtils, SetAccumulator}
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize
 
 import org.apache.spark.SparkContext
@@ -408,7 +408,7 @@ case class MergeIntoCommand(
     // UDF to increment metrics
     val incrSourceRowCountExpr = makeMetricUpdateUDF("numSourceRows")
     val sourceDF = Dataset.ofRows(spark, source)
-      .filter(new Column(incrSourceRowCountExpr))
+      .observe("source", count(lit(1)).as("numSourceRows"))
 
     // Apply inner join to between source and target using the merge condition to find matches
     // In addition, we attach two columns
@@ -431,12 +431,19 @@ case class MergeIntoCommand(
     // multipleMatchCount = # of target rows with more than 1 matching source row (duplicate match)
     // multipleMatchSum = total # of duplicate matched rows
     import org.apache.spark.sql.delta.implicits._
-    val (multipleMatchCount, multipleMatchSum) = matchedRowCounts
-      .filter("count > 1")
-      .select(coalesce(count(new Column("*")), lit(0)), coalesce(sum("count"), lit(0)))
-      .as[(Long, Long)]
-      .collect()
-      .head
+    val (multipleMatch, observedMetrics) = MetricUtils.collectWithMetrics {
+      matchedRowCounts
+        .filter("count > 1")
+        .select(coalesce(count(new Column("*")), lit(0)), coalesce(sum("count"), lit(0)))
+        .as[(Long, Long)]
+    }
+
+    val (multipleMatchCount, multipleMatchSum) = multipleMatch.head
+
+    val numSourceRows = metrics("numSourceRows")
+    observedMetrics.get("source").foreach { sourceMetrics =>
+      numSourceRows += sourceMetrics.getAs[Long]("numSourceRows")
+    }
 
     val hasMultipleMatches = multipleMatchCount > 0
 
