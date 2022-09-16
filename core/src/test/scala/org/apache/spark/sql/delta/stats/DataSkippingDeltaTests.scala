@@ -759,8 +759,8 @@ trait DataSkippingDeltaTestsBase extends QueryTest
       val Seq(r1) = getScanReport {
         assert(sql(query).collect().length == 4)
       }
-      val inputFiles = spark.sql(query).inputFiles
-      assert(deltaLog.snapshot.numOfFiles - inputFiles.length == 6)
+      assert(r1.size.get("scanned").isDefined)
+      assert(r1.size.get("scanned").get.files.get == 4)
 
       val allQuery = "SELECT * from t1"
       val Seq(r2) = getScanReport {

@@ -43,6 +43,7 @@ import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.connector.catalog.CatalogV2Implicits._
+import org.apache.spark.sql.connector.catalog.TableCapability.BATCH_READ
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
@@ -150,7 +151,8 @@ class DeltaAnalysis(session: SparkSession)
       }
 
     // This rule falls back to V1 nodes, since we don't have a V2 reader for Delta right now
-    case dsv2 @ DataSourceV2Relation(d: DeltaTableV2, _, _, _, options) =>
+    case dsv2 @ DataSourceV2Relation(d: DeltaTableV2, _, _, _, options)
+        if !d.capabilities().contains(BATCH_READ) =>
       DeltaRelation.fromV2Relation(d, dsv2, options)
 
     // DML - TODO: Remove these Delta-specific DML logical plans and use Spark's plans directly
@@ -400,9 +402,13 @@ class DeltaAnalysis(session: SparkSession)
 
 /** Matchers for dealing with a Delta table. */
 object DeltaRelation extends DeltaLogging {
-  def unapply(plan: LogicalPlan): Option[LogicalRelation] = plan match {
+  def unapply(plan: LogicalPlan): Option[LogicalPlan] = plan match {
     case dsv2 @ DataSourceV2Relation(d: DeltaTableV2, _, _, _, options) =>
-      Some(fromV2Relation(d, dsv2, options))
+      if (!d.capabilities().contains(BATCH_READ)) {
+        Some(fromV2Relation(d, dsv2, options))
+      } else {
+        Some(dsv2)
+      }
     case lr @ DeltaTable(_) => Some(lr)
     case _ => None
   }

@@ -231,9 +231,9 @@ class DeltaSuite extends QueryTest
       val df2 = spark.read.format("delta").load(basePath).where("part = 1")
       val df3 = spark.read.format("delta").load(basePath).where("part = 1").limit(3)
 
-      assert(df1.inputFiles.forall(_.contains(basePath)))
-      assert(df2.inputFiles.forall(_.contains(basePath)))
-      assert(df3.inputFiles.forall(_.contains(basePath)))
+      assert(DeltaTestUtils.getInputFiles(df1).forall(_.contains(basePath)))
+      assert(DeltaTestUtils.getInputFiles(df2).forall(_.contains(basePath)))
+      assert(DeltaTestUtils.getInputFiles(df3).forall(_.contains(basePath)))
     }
   }
 
@@ -1173,7 +1173,7 @@ class DeltaSuite extends QueryTest
         .partitionBy("by4", "by8")
         .save(tempDir.toString)
 
-      val files = spark.read.format("delta").load(tempDir.toString).inputFiles
+      val files = DeltaTestUtils.getInputFiles(spark.read.format("delta").load(tempDir.toString))
 
       val deltaLog = loadDeltaLog(tempDir.getAbsolutePath)
       assertPartitionExists("by4", deltaLog, files)
@@ -1292,7 +1292,7 @@ class DeltaSuite extends QueryTest
         .partitionBy("by4")
         .save(tempDir.toString)
 
-      val files = spark.read.format("delta").load(tempDir.toString).inputFiles
+      val files = DeltaTestUtils.getInputFiles(spark.read.format("delta").load(tempDir.toString))
 
       val deltaLog = loadDeltaLog(tempDir.getAbsolutePath)
       assertPartitionExists("by4", deltaLog, files)
@@ -1322,7 +1322,7 @@ class DeltaSuite extends QueryTest
         .partitionBy("by4")
         .save(tempDir.toString)
 
-      val files = spark.read.format("delta").load(tempDir.toString).inputFiles
+      val files = DeltaTestUtils.getInputFiles(spark.read.format("delta").load(tempDir.toString))
 
       val deltaLog = loadDeltaLog(tempDir.getAbsolutePath)
       assertPartitionExists("by4", deltaLog, files)
