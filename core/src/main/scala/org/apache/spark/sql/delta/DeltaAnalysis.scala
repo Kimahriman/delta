@@ -404,11 +404,11 @@ class DeltaAnalysis(session: SparkSession)
 object DeltaRelation extends DeltaLogging {
   def unapply(plan: LogicalPlan): Option[LogicalPlan] = plan match {
     case dsv2 @ DataSourceV2Relation(d: DeltaTableV2, _, _, _, options) =>
-      // if (!d.capabilities().contains(BATCH_READ)) {
+      if (!d.capabilities().contains(BATCH_READ)) {
         Some(fromV2Relation(d, dsv2, options))
-      // } else {
-        // Some(dsv2)
-      // }
+      } else {
+        Some(dsv2)
+      }
     case lr @ DeltaTable(_) => Some(lr)
     case _ => None
   }

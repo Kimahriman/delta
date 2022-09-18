@@ -42,7 +42,7 @@ import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 
 class DeltaScanBuilder(
     sparkSession: SparkSession,
-    deltaFileIndex: TahoeLogFileIndex,
+    deltaFileIndex: TahoeFileIndex,
     tableSchema: StructType,
     options: CaseInsensitiveStringMap)
   extends ParquetScanBuilder(sparkSession, deltaFileIndex, tableSchema, tableSchema, options)
@@ -78,9 +78,13 @@ class DeltaScanBuilder(
 
   override def build(): Scan = {
     val parquetScan = super.build().asInstanceOf[ParquetScan]
-    val scanGenerator = getDeltaScanGenerator(deltaFileIndex)
-    val preparedScan = scanGenerator.filesForScan(partitionFilters ++ dataFilters)
-    val preparedIndex = getPreparedIndex(preparedScan, deltaFileIndex)
-    parquetScan.copy(fileIndex = preparedIndex)
+    if (deltaFileIndex.isInstanceOf[TahoeLogFileIndex]) {
+      val logFileIndex = deltaFileIndex.asInstanceOf[TahoeLogFileIndex]
+      val scanGenerator = getDeltaScanGenerator(logFileIndex)
+      val preparedScan = scanGenerator.filesForScan(partitionFilters ++ dataFilters)
+      val preparedIndex = getPreparedIndex(preparedScan, logFileIndex)
+      parquetScan.copy(fileIndex = preparedIndex)
+    }
+    parquetScan
   }
 }

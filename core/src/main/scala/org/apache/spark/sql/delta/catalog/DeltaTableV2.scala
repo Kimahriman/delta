@@ -25,7 +25,7 @@ import scala.collection.mutable
 import org.apache.spark.sql.delta.{ColumnWithDefaultExprUtils, DeltaColumnMapping, DeltaErrors, DeltaLog, DeltaOptions, DeltaTableIdentifier, DeltaTableUtils, DeltaTimeTravelSpec, NoMapping, GeneratedColumn, Snapshot}
 import org.apache.spark.sql.delta.commands.WriteIntoDelta
 import org.apache.spark.sql.delta.commands.cdc.CDCReader
-import org.apache.spark.sql.delta.files.{TahoeLogFileIndex}
+import org.apache.spark.sql.delta.files.{TahoeFileIndex, TahoeLogFileIndex}
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.schema.SchemaUtils
 import org.apache.spark.sql.delta.sources.{DeltaDataSource, DeltaSourceUtils, DeltaSQLConf}
@@ -59,7 +59,8 @@ case class DeltaTableV2(
     tableIdentifier: Option[String] = None,
     timeTravelOpt: Option[DeltaTimeTravelSpec] = None,
     options: Map[String, String] = Map.empty,
-    cdcOptions: CaseInsensitiveStringMap = CaseInsensitiveStringMap.empty())
+    cdcOptions: CaseInsensitiveStringMap = CaseInsensitiveStringMap.empty(),
+    pinnedFileIndex: Option[TahoeFileIndex] = None)
   extends Table
   with SupportsRead
   with SupportsWrite
@@ -170,6 +171,10 @@ case class DeltaTableV2(
     baseCapabilities.asJava
   }
 
+  def withFileIndex(fileIndex: TahoeFileIndex): DeltaTableV2 = {
+    copy(pinnedFileIndex = Some(fileIndex))
+  }
+
   override def newScanBuilder(scanBuilderOptions: CaseInsensitiveStringMap): ScanBuilder = {
     if (!deltaLog.tableExists) {
       // special error handling for path based tables
@@ -186,8 +191,10 @@ case class DeltaTableV2(
     val partitionPredicates = DeltaDataSource.verifyAndCreatePartitionFilters(
       path.toString, snapshot, partitionFilters)
 
-    val fileIndex = TahoeLogFileIndex(spark, deltaLog, deltaLog.dataPath, snapshot,
-      partitionPredicates, timeTravelSpec.isDefined)
+    val fileIndex = pinnedFileIndex.getOrElse {
+      TahoeLogFileIndex(spark, deltaLog, deltaLog.dataPath, snapshot,
+        partitionPredicates, timeTravelSpec.isDefined)
+    }
 
     new DeltaScanBuilder(spark, fileIndex, schema, scanBuilderOptions)
   }

@@ -20,7 +20,7 @@ import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.{Action, AddCDCFile, FileAction}
 import org.apache.spark.sql.delta.commands.DeleteCommand.{rewritingFilesMsg, FINDING_TOUCHED_FILES_MSG}
 import org.apache.spark.sql.delta.commands.MergeIntoCommand.totalBytesAndDistinctPartitionValues
-import org.apache.spark.sql.delta.files.TahoeBatchFileIndex
+import org.apache.spark.sql.delta.files.{TahoeBatchFileIndex, TahoeFileIndex}
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize
 
 import org.apache.spark.SparkContext
@@ -239,7 +239,8 @@ case class DeleteCommand(
               sparkSession, txn, "delete", deltaLog.dataPath, filesToRewrite, nameToAddFileMap)
             // Keep everything from the resolved target except a new TahoeFileIndex
             // that only involves the affected files instead of all files.
-            val newTarget = DeltaTableUtils.replaceFileIndex(target, baseRelation.location)
+            val newTarget = DeltaTableUtils.replaceFileIndex(target,
+              baseRelation.location.asInstanceOf[TahoeFileIndex])
             val targetDF = Dataset.ofRows(sparkSession, newTarget)
             val filterCond = Not(EqualNullSafe(cond, Literal.TrueLiteral))
             val rewrittenActions = rewriteFiles(txn, targetDF, filterCond, filesToRewrite.length)
