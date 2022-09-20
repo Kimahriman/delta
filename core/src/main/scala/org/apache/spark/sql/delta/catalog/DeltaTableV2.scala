@@ -161,7 +161,8 @@ case class DeltaTableV2(
     val v2ReaderEnabled = spark.sessionState.conf.getConf(DeltaSQLConf.V2_READER_ENABLED)
     // The features v2 reading doesn't currently support
     val columnMappingEnabled = snapshot.metadata.columnMappingMode != NoMapping
-    val cdcRead = CDCReader.isCDCRead(new CaseInsensitiveStringMap(options.asJava))
+    val cdcRead = CDCReader.isCDCRead(new CaseInsensitiveStringMap(options.asJava)) ||
+      !cdcOptions.isEmpty()
     // If there are generated columns, we can't currently optimize them, so skip as well
     val hasGeneratedColumns = GeneratedColumn.hasGeneratedColumns(snapshot.schema)
 

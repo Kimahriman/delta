@@ -32,6 +32,9 @@ import org.scalatest.GivenWhenThen
 // scalastyle:off import.ordering.noEmptyLine
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.{Expression, Literal, PredicateHelper}
+import org.apache.spark.sql.catalyst.plans.logical.Filter
+import org.apache.spark.sql.execution.datasources.v2.FileScan
+import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
 import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
@@ -1078,11 +1081,17 @@ trait DataSkippingDeltaTestsBase extends QueryTest
     if (predicate == "True") return Seq(Literal.TrueLiteral)
 
     val filtered = spark.read.format("delta").load(deltaLog.dataPath.toString).where(predicate)
+
+    // For V2 scans, partition filters get pushed during the optimization phase, whereas
+    // with V1, they don't get pushed until creating the physical plan, so it will still
+    // be in the filter.
     filtered
       .queryExecution
       .optimizedPlan
-      .expressions
-      .flatMap(splitConjunctivePredicates)
+      .collect {
+        case f: Filter => splitConjunctivePredicates(f.condition)
+        case DataSourceV2ScanRelation(_, scan: FileScan, _, _) => scan.partitionFilters
+      }.flatten
   }
 
   /**
