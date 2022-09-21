@@ -503,7 +503,7 @@ trait OptimisticTransactionImpl extends TransactionalWrite
     }
   }
 
-  /** Returns a[[DeltaScan]] based on the given filters. */
+  /** Returns a [[DeltaScan]] based on the given filters. */
   override def filesForScan(
     filters: Seq[Expression],
     keepNumRecords: Boolean = false
@@ -514,11 +514,6 @@ trait OptimisticTransactionImpl extends TransactionalWrite
     }
     readPredicates += partitionFilters.reduceLeftOption(And).getOrElse(Literal(true))
     readFiles ++= scan.files
-    // scalastyle:off println
-    // println("filesForScan")
-    // println(scan.files.length)
-    // println()
-    // scalastyle:on println
     scan
   }
 

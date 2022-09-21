@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 // scalastyle:off import.ordering.noEmptyLine
 import org.apache.spark.sql.delta.actions.{CommitInfo, Protocol}
+import org.apache.spark.sql.delta.catalog.DeltaTableV2
 import org.apache.spark.sql.delta.commands.cdc.CDCReader
 import org.apache.spark.sql.delta.files.TahoeLogFileIndex
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
@@ -36,7 +37,8 @@ import org.apache.spark.sql.catalyst.expressions.InSet
 import org.apache.spark.sql.catalyst.expressions.Literal.TrueLiteral
 import org.apache.spark.sql.catalyst.plans.logical.Filter
 import org.apache.spark.sql.execution.FileSourceScanExec
-import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, LogicalRelation}
+import org.apache.spark.sql.execution.datasources.{FilePartition, HadoopFsRelation, LogicalRelation}
+import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceV2ScanRelation, FileScan}
 import org.apache.spark.sql.execution.streaming.MemoryStream
 import org.apache.spark.sql.functions.struct
 import org.apache.spark.sql.internal.SQLConf
@@ -110,7 +112,12 @@ class DeltaSuite extends QueryTest
       // Read only one partition
       val query = spark.read.format("delta").load(testPath).where("part = 1")
       val fileScans = query.queryExecution.executedPlan.collect {
-        case f: FileSourceScanExec => f
+        case f: FileSourceScanExec =>
+          val numFiles = f.metrics.get("numFiles")
+          assert(numFiles.nonEmpty)
+          numFiles.get
+        case b: BatchScanExec =>
+          b.inputPartitions.map(_.asInstanceOf[FilePartition].files.length).sum
       }
 
       // Force the query to read files and generate metrics
@@ -118,9 +125,7 @@ class DeltaSuite extends QueryTest
 
       // Verify only one file was read
       assert(fileScans.size == 1)
-      val numFilesAferPartitionSkipping = fileScans.head.metrics.get("numFiles")
-      assert(numFilesAferPartitionSkipping.nonEmpty)
-      assert(numFilesAferPartitionSkipping.get.value == 1)
+      assert(fileScans.head == 1)
       checkAnswer(query, Seq(Row(1, 1)))
     }
   }
@@ -208,14 +213,15 @@ class DeltaSuite extends QueryTest
     val df = spark.read.format("delta").load(tempDir.toString)
 
     // Verify the correct partitioning schema is picked up
-    val hadoopFsRelations = df.queryExecution.analyzed.collect {
-      case LogicalRelation(baseRelation, _, _, _) if
-      baseRelation.isInstanceOf[HadoopFsRelation] =>
-        baseRelation.asInstanceOf[HadoopFsRelation]
+    val relations = df.queryExecution.optimizedPlan.collect {
+      case LogicalRelation(baseRelation: HadoopFsRelation, _, _, _) =>
+        (baseRelation.partitionSchema, baseRelation.dataSchema)
+      case DataSourceV2ScanRelation(_, scan: FileScan, _, _) =>
+        (scan.readPartitionSchema, scan.readDataSchema)
     }
-    assert(hadoopFsRelations.size === 1)
-    assert(hadoopFsRelations.head.partitionSchema.exists(_.name == "is_odd"))
-    assert(hadoopFsRelations.head.dataSchema.exists(_.name == "value"))
+    assert(relations.size === 1)
+    assert(relations.head._1.exists(_.name == "is_odd"))
+    assert(relations.head._2.exists(_.name == "value"))
 
     checkAnswer(df.where("is_odd = true"), Row(1, true) :: Nil)
     checkAnswer(df.where("is_odd IS NULL"), Row(null, null) :: Nil)
@@ -1601,6 +1607,7 @@ class DeltaSuite extends QueryTest
         .where("_2 IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)").select("_1")
       val condition = df.queryExecution.optimizedPlan.collectFirst {
         case f: Filter => f.condition
+        case DataSourceV2ScanRelation(_, scan: FileScan, _, _) => scan.partitionFilters.head
       }
       assert(condition.exists(_.isInstanceOf[InSet]))
       checkAnswer(df, Row(1))

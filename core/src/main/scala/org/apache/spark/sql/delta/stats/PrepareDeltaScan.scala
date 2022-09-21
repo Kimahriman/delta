@@ -37,6 +37,7 @@ import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
+import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 
 /**
  * Before query planning, we prepare any scans over delta tables by pushing
@@ -159,15 +160,9 @@ trait PrepareDeltaScanBase extends Rule[LogicalPlan]
         case scan @ DeltaTableScan(canonicalizedPlanWithRemovedProjections, filters, fileIndex,
           limit, delta) =>
           // scalastyle:off println
-          // println("Transforming plan")
-          // println(scan)
-          // println()
-          // println("relations", scan.collect {
-          //   case r: DataSourceV2Relation => r
-          // })
-          // println("scan relations", scan.collect {
-          //   case r: DataSourceV2ScanRelation => r
-          // })
+          println()
+          println("Found delta table scan")
+          println(plan)
           // scalastyle:on println
           val scanGenerator = getDeltaScanGenerator(fileIndex)
           val preparedScan = deltaScans.getOrElseUpdate(canonicalizedPlanWithRemovedProjections,
@@ -286,7 +281,8 @@ trait PrepareDeltaScanBase extends Rule[LogicalPlan]
         case PhysicalOperation(
             _,
             filters,
-            delta @ DeltaTable(fileIndex: TahoeLogFileIndex)) =>
+            delta @ LogicalRelation(HadoopFsRelation(
+              fileIndex: TahoeLogFileIndex, _, _, _, _, _), _, _, _)) =>
           val allFilters = fileIndex.partitionFilters ++ filters
           Some((canonicalizePlanForDeltaFileListing(plan), allFilters, fileIndex, None, delta))
 
