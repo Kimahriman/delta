@@ -151,9 +151,9 @@ class DeltaAnalysis(session: SparkSession)
       }
 
     // This rule falls back to V1 nodes, since we don't have a V2 reader for Delta right now
-    case dsv2 @ DataSourceV2Relation(d: DeltaTableV2, _, _, _, options)
+    case dsv2 @ DataSourceV2Relation(d: DeltaTableV2, _, _, _, _)
         if !d.capabilities().contains(BATCH_READ) =>
-      DeltaRelation.fromV2Relation(d, dsv2, options)
+      DeltaRelation.fromV2Relation(d, dsv2)
 
     // DML - TODO: Remove these Delta-specific DML logical plans and use Spark's plans directly
 
@@ -405,7 +405,7 @@ object DeltaRelation extends DeltaLogging {
   def unapply(plan: LogicalPlan): Option[LogicalPlan] = plan match {
     case dsv2 @ DataSourceV2Relation(d: DeltaTableV2, _, _, _, options) =>
       if (!d.capabilities().contains(BATCH_READ)) {
-        Some(fromV2Relation(d, dsv2, options))
+        Some(fromV2Relation(d, dsv2))
       } else {
         Some(dsv2)
       }
@@ -415,11 +415,10 @@ object DeltaRelation extends DeltaLogging {
 
   def fromV2Relation(
       d: DeltaTableV2,
-      v2Relation: DataSourceV2Relation,
-      options: CaseInsensitiveStringMap): LogicalRelation = {
+      v2Relation: DataSourceV2Relation): LogicalRelation = {
     recordFrameProfile("DeltaAnalysis", "fromV2Relation") {
-      val relation = d.withOptions(options.asScala.toMap).toBaseRelation
-      val output = if (CDCReader.isCDCRead(options)) {
+      val relation = d.toBaseRelation
+      val output = if (d.isCDCRead()) {
         CDCReader.cdcReadSchema(d.schema()).toAttributes
       } else {
         v2Relation.output

@@ -104,6 +104,10 @@ case class DeltaTableV2(
     timeTravelOpt.orElse(timeTravelByPath)
   }
 
+  def isCDCRead(): Boolean = {
+    !cdcOptions.isEmpty()
+  }
+
   lazy val snapshot: Snapshot = {
     timeTravelSpec.map { spec =>
       val (version, accessType) = DeltaTableUtils.resolveTimeTravelVersion(
@@ -161,8 +165,7 @@ case class DeltaTableV2(
     val v2ReaderEnabled = spark.sessionState.conf.getConf(DeltaSQLConf.V2_READER_ENABLED)
     // The features v2 reading doesn't currently support
     val columnMappingEnabled = snapshot.metadata.columnMappingMode != NoMapping
-    val cdcRead = CDCReader.isCDCRead(new CaseInsensitiveStringMap(options.asJava)) ||
-      !cdcOptions.isEmpty()
+    val cdcRead = !cdcOptions.isEmpty()
     // If there are generated columns, we can't currently optimize them, so skip as well
     val hasGeneratedColumns = GeneratedColumn.hasGeneratedColumns(snapshot.schema)
 
@@ -227,43 +230,6 @@ case class DeltaTableV2(
 
     deltaLog.createRelation(
       partitionPredicates, Some(snapshot), timeTravelSpec.isDefined, cdcOptions)
-  }
-
-  /**
-   * Check the passed in options and existing timeTravelOpt, set new time travel by options.
-   */
-  def withOptions(options: Map[String, String]): DeltaTableV2 = {
-    val ttSpec = DeltaDataSource.getTimeTravelVersion(options)
-    if (timeTravelOpt.nonEmpty && ttSpec.nonEmpty) {
-      throw DeltaErrors.multipleTimeTravelSyntaxUsed
-    }
-
-    def checkCDCOptionsValidity(options: CaseInsensitiveStringMap): Unit = {
-      // check if we have both version and timestamp parameters
-      if (options.containsKey(DeltaDataSource.CDC_START_TIMESTAMP_KEY)
-          && options.containsKey(DeltaDataSource.CDC_START_VERSION_KEY)) {
-        throw DeltaErrors.multipleCDCBoundaryException("starting")
-      }
-      if (options.containsKey(DeltaDataSource.CDC_END_VERSION_KEY)
-          && options.containsKey(DeltaDataSource.CDC_END_TIMESTAMP_KEY)) {
-        throw DeltaErrors.multipleCDCBoundaryException("ending")
-      }
-      if (!options.containsKey(DeltaDataSource.CDC_START_VERSION_KEY)
-          && !options.containsKey(DeltaDataSource.CDC_START_TIMESTAMP_KEY)) {
-        throw DeltaErrors.noStartVersionForCDC()
-      }
-    }
-
-    val caseInsensitiveStringMap = new CaseInsensitiveStringMap(options.asJava)
-
-    if (timeTravelOpt.isEmpty && ttSpec.nonEmpty) {
-      copy(timeTravelOpt = ttSpec)
-    } else if (CDCReader.isCDCRead(caseInsensitiveStringMap)) {
-      checkCDCOptionsValidity(caseInsensitiveStringMap)
-      copy(cdcOptions = caseInsensitiveStringMap)
-    } else {
-      this
-    }
   }
 
   override def v1Table: CatalogTable = {
