@@ -347,7 +347,7 @@ object DeltaDataSource extends DatabricksLogging {
     }
   }
 
-  def createDeltaTableV2(session: SparkSession, options: Map[String, String]): DeltaTableV2 = {
+  def createDeltaTableV2(spark: SparkSession, options: Map[String, String]): DeltaTableV2 = {
     val maybePath = options.getOrElse("path", {
       throw DeltaErrors.pathNotSpecifiedException
     })
@@ -377,17 +377,24 @@ object DeltaDataSource extends DatabricksLogging {
           DeltaDataSource.CDC_END_TIMESTAMP_KEY)
       }
     }
-    val dfOptions: Map[String, String] = if (session.sessionState.conf.getConf(
-        DeltaSQLConf.LOAD_FILE_SYSTEM_CONFIGS_FROM_DATAFRAME_OPTIONS)) {
-      options
-    } else {
-      Map.empty
-    }
+
+    val fileSystemOptions: Map[String, String] =
+      if (spark.sessionState.conf.getConf(
+          DeltaSQLConf.LOAD_FILE_SYSTEM_CONFIGS_FROM_DATAFRAME_OPTIONS)) {
+        // We pick up only file system options so that we don't pass any parquet or json options to
+        // the code that reads Delta transaction logs.
+        options.filterKeys { k =>
+          DeltaTableUtils.validDeltaTableHadoopPrefixes.exists(k.startsWith)
+        }.toMap
+      } else {
+        Map.empty
+      }
+
     DeltaTableV2(
-      session,
+      spark,
       new Path(maybePath),
       timeTravelOpt = timeTravelByParams,
-      options = dfOptions,
+      options = fileSystemOptions,
       cdcOptions = new CaseInsensitiveStringMap(cdcOptions.asJava)
     )
   }
