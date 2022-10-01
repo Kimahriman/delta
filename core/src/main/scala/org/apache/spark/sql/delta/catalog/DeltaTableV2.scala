@@ -109,6 +109,10 @@ case class DeltaTableV2(
     timeTravelOpt.orElse(timeTravelByPath)
   }
 
+  def isCDCRead(): Boolean = {
+    !cdcOptions.isEmpty()
+  }
+
   lazy val snapshot: Snapshot = {
     timeTravelSpec.map { spec =>
       val (version, accessType) = DeltaTableUtils.resolveTimeTravelVersion(
@@ -131,7 +135,7 @@ case class DeltaTableV2(
       DeltaColumnMapping.dropColumnMappingMetadata(
         ColumnWithDefaultExprUtils.removeDefaultExpressions(snapshot.schema)))
 
-  override def schema(): StructType = tableSchema
+  override def schema(): StructType = SchemaUtils.dropNullTypeColumns(tableSchema)
 
   override def partitioning(): Array[Transform] = {
     snapshot.metadata.partitionColumns.map { col =>

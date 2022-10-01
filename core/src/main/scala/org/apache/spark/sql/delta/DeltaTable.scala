@@ -35,6 +35,9 @@ import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTrans
 import org.apache.spark.sql.execution.datasources.{FileFormat, HadoopFsRelation, LogicalRelation}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
+import org.apache.spark.sql.delta.catalog.{DeltaTableV2, DeltaScanBuilder}
+import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScanBuilder
 
 /**
  * Extractor Object for pulling out the table scan of a Delta table. It could be a full scan
