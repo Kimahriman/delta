@@ -26,12 +26,11 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Expression, PredicateHelper}
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
 import org.apache.spark.sql.connector.read.Scan
-import org.apache.spark.sql.execution.datasources.LogicalRelation
+import org.apache.spark.sql.connector.expressions.aggregate.CountStar
+import org.apache.spark.sql.execution.datasources.{LogicalRelation, PartitioningAwareFileIndex}
 import org.apache.spark.sql.execution.datasources.v2.parquet.{ParquetScan, ParquetScanBuilder}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
-import org.apache.spark.sql.execution.datasources.PartitioningAwareFileIndex
-
 
 /**
  * The scan builder for V2 Delta table reads. Mostly serves the same purpose as the
@@ -54,6 +53,47 @@ class DeltaScanBuilder(
   with PredicateHelper
   with DeltaLogging {
 
+  // This holds an aggregation that can be fully pushed to the DeltaLog metadata
+  protected var pushedLogAggregations = Option.empty[Aggregation]
+
+  protected def supportsDeltaLogPushDown(aggregation: Aggregation): Boolean = {
+    if (dataFilters.nonEmpty) {
+      // Can't push aggregation with data filters
+      return false
+    }
+    // Only count(*) can definitely be pushed to the DeltaLog
+    val isCountStar = aggregation.aggregateExpressions().forall {
+      case _: CountStar => true
+      case _ => false
+    }
+
+    val groupByReferences = aggregation.groupByExpressions().flatMap(_.references)
+    val isGroupByPartition = groupByReferences.forall { ref =>
+      deltaFileIndex.partitionSchema.findNestedField(ref.fieldNames()).isDefined
+    }
+
+    isCountStar && isGroupByPartition
+  }
+
+  override def supportCompletePushDown(aggregation: Aggregation): Boolean = {
+    if (supportsDeltaLogPushDown(aggregation)) {
+      true
+    } else {
+      super.supportCompletePushDown(aggregation)
+    }
+  }
+
+  override def pushAggregation(aggregation: Aggregation): Boolean = {
+    // scalastyle:off println
+    println(aggregation)
+    // Pushed aggregations don't work with column mapping right now
+    if (metadata.columnMappingMode != NoMapping) {
+      return false
+    } else {
+      return super.pushAggregation(aggregation)
+    }
+  }
+
   protected def prepareSchema(inputSchema: StructType): StructType = {
     DeltaColumnMapping.createPhysicalSchema(inputSchema, tableSchema,
       metadata.columnMappingMode)
@@ -62,6 +102,10 @@ class DeltaScanBuilder(
   protected def getDeltaScanGenerator(index: TahoeLogFileIndex): DeltaScanGenerator = {
     // The first case means that we've fixed the table snapshot for time travel
     if (index.isTimeTravelQuery) return index.getSnapshot
+
+    // I think checking for a transaction here is only needed for the tests. We aren't guaranteed
+    // to be in a transaction yet (for a V2 write with fallback), so we need to mark transactions
+    // in WriteIntoDelta regardless.
     val scanGenerator = OptimisticTransaction.getActive().map(_.getDeltaScanGenerator(index))
       .getOrElse {
         index.getSnapshot
@@ -95,15 +139,6 @@ class DeltaScanBuilder(
     val (deterministicFilters, nonDeterministicFilters) = filters.partition((_.deterministic))
     val filtersToEvaluate = super.pushFilters(deterministicFilters)
     filtersToEvaluate ++ nonDeterministicFilters
-  }
-
-  override def pushAggregation(aggregation: Aggregation): Boolean = {
-    // Pushed aggregations don't work with column mapping right now
-    if (metadata.columnMappingMode != NoMapping) {
-      return false
-    } else {
-      return super.pushAggregation(aggregation)
-    }
   }
 
   override def build(): Scan = {
