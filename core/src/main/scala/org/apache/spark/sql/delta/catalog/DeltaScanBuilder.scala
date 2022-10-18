@@ -125,12 +125,12 @@ class DeltaScanBuilder(
     val aggResult = filesWithStats
       .groupBy(groupByColumns: _*)
       .agg(aggColumns.head, aggColumns.tail: _*)
-      // .queryExecution
-      // .executedPlan
-      // .executeCollect()
 
     pushedAggregationSchema = Some(aggResult.schema)
-    Some(aggResult.queryExecution.executedPlan.executeCollect())
+
+    withStatusCode("DELTA", "Building aggregation from log") {
+      Some(aggResult.queryExecution.executedPlan.executeCollect())
+    }
   }
 
   override def supportCompletePushDown(aggregation: Aggregation): Boolean = {

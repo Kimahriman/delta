@@ -16,14 +16,11 @@
 
 package org.apache.spark.sql.delta.catalog
 
-import org.apache.spark.sql.delta.metering.DeltaLogging
-
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.connector.read.LocalScan
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
-import org.apache.spark.sql.internal.connector.SupportsMetadata
+import org.apache.spark.sql.types.StructType
 
 case class DeltaLogScan(
     sparkSession: SparkSession,
@@ -31,5 +28,3 @@ case class DeltaLogScan(
     readSchema: StructType,
     rows: Array[InternalRow])
     extends LocalScan
-    with SupportsMetadata
-    with DeltaLogging {}
