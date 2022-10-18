@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.delta.stats
 
+import java.io.File
 
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.catalog.DeltaTableScan
@@ -27,10 +28,12 @@ import org.scalatest.GivenWhenThen
 // scalastyle:off import.ordering.noEmptyLine
 import org.apache.spark.SparkConf
 import org.apache.spark.sql._
+import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.util.Utils
 
 trait AggregatePushDownSuiteBase extends QueryTest
     with SharedSparkSession
@@ -42,67 +45,129 @@ trait AggregatePushDownSuiteBase extends QueryTest
 
   protected override def sparkConf: SparkConf =
     super.sparkConf
-      .set(SQLConf.PARQUET_AGGREGATE_PUSHDOWN_ENABLED.key, "true")
+      // .set(SQLConf.PARQUET_AGGREGATE_PUSHDOWN_ENABLED.key, "true")
       .set(DeltaSQLConf.V2_READER_ENABLED.key, "true")
 
-  def checkPushedAggregations(
-    data: DataFrame,
+  var tempDir: File = _
+
+  def tempPath = tempDir.getCanonicalPath()
+
+  val data = Seq(
+    (0, "a", 1, "xyx"),
+    (0, "b", 2, "zyz"),
+    (0, "c", 3, null),
+    (0, null, 4, "rsr"),
+    (1, "a", 5, "bab"),
+    (1, "b", 6, "def"),
+    (1, "c", 7, null),
+    (1, null, 8, "ghi"))
+
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    tempDir = Utils.createTempDir()
+    // spark.range(10)
+    data.toDF("part1", "part2", "num", "str")
+        // .withColumn("part", $"id" % 2)
+        .write
+        .format("delta")
+        .partitionBy("part1", "part2")
+        .mode("append")
+        .save(tempDir.getCanonicalPath())
+  }
+
+  override def afterAll(): Unit = {
+    Utils.deleteRecursively(tempDir)
+    super.afterAll()
+  }
+
+  lazy val df = spark.read.format("delta").load(tempPath)
+
+  def checkPushedLogAggregations(
+    name: String,
     aggs: Seq[Column],
     filter: String = "true",
     groupBy: Seq[String] = Seq.empty,
     result: Seq[Row] = Seq.empty,
-    pushedAggString: String = ""
+    outputFields: Seq[String] = Seq.empty
   ): Unit = {
-    val plans = DeltaTestUtils.withPhysicalPlansCaptured(spark) {
-      checkAnswer(
-        data.filter(filter).groupBy(groupBy.map(col): _*).agg(aggs.head, aggs.tail: _*),
-        result
-      )
-    }
-    val scans = plans.flatMap(_.collect {
-      case BatchScanExec(_, s: DeltaTableScan, _, _) => s
-    })
-    assert(scans.length == 1)
-    assert(scans.head.getMetaData().get("PushedAggregation").get == s"[$pushedAggString]")
-  }
-
-  test("Aggregates are pushed down") {
-    withTempDir { inputDir =>
-      val testPath = inputDir.getCanonicalPath
-      spark.range(10)
-        .withColumn("part", $"id" % 2)
-        .write
-        .format("delta")
-        .partitionBy("part")
-        .mode("append")
-        .save(testPath)
-
-      val df = spark.read.format("delta").load(testPath)
-
-      Given("No filter or group by")
-      checkPushedAggregations(
-        df,
-        Seq(min($"id"), max($"id"), count($"id")),
-        result = Seq(Row(0, 9, 10)),
-        pushedAggString = "MIN(id), MAX(id), COUNT(id)")
-
-      Given("Group by on partition")
-      checkPushedAggregations(
-        df,
-        Seq(min($"id"), max($"id"), count($"id")),
-        groupBy = Seq("part"),
-        result = Seq(Row(0, 0, 8, 5), Row(1, 1, 9, 5)),
-        pushedAggString = "MIN(id), MAX(id), COUNT(id)")
-
-      Given("Filter on partition")
-      checkPushedAggregations(
-        df,
-        Seq(min($"id"), max($"id"), count($"id")),
-        filter = "part = 1",
-        result = Seq(Row(1, 9, 5)),
-        pushedAggString = "MIN(id), MAX(id), COUNT(id)")
+    test(s"Aggregates are pushed down to Delta Log - $name") {
+      df.filter(filter).groupBy(groupBy.map(col): _*).agg(aggs.head, aggs.tail: _*).explain()
+      val plans = DeltaTestUtils.withPhysicalPlansCaptured(spark) {
+        checkAnswer(
+          df.filter(filter).groupBy(groupBy.map(col): _*).agg(aggs.head, aggs.tail: _*),
+          result
+        )
+      }
+      val scans = plans.flatMap(_.collect {
+        case s: LocalTableScanExec => s
+      })
+      assert(scans.length == 1)
+      assert(scans.head.output.length == outputFields.length)
+      scans.head.output.zip(outputFields).foreach { case (attr, name) =>
+        assert(attr.name == name)
+      }
     }
   }
+
+  checkPushedLogAggregations(
+    "No filter or group by",
+    Seq(count("*")),
+    result = Seq(Row(8)),
+    outputFields = Seq("COUNT(*)"))
+
+  checkPushedLogAggregations(
+    "Group on a single partition",
+    Seq(count($"*")),
+    groupBy = Seq("part1"),
+    result = Seq(Row(0, 4), Row(1, 4)),
+    outputFields = Seq("part1", "COUNT(*)"))
+  
+  checkPushedLogAggregations(
+    "Group on a multiple partitions",
+    Seq(count($"*")),
+    groupBy = Seq("part1", "part2"),
+    result = Seq(Row(0, "a", 1), Row(0, "b", 1), Row(0, "c", 1), Row(0, null, 1), Row(1, "a", 1),
+      Row(1, "b", 1), Row(1, "c", 1), Row(1, null, 1)),
+    outputFields = Seq("part1", "part2", "COUNT(*)"))
+
+  checkPushedLogAggregations(
+    "Filter on partition",
+    Seq(count($"*")),
+    filter = "part1 = 1",
+    result = Seq(Row(4)),
+    outputFields = Seq("COUNT(*)"))
+  
+  checkPushedLogAggregations(
+    "Filter and group on partition",
+    Seq(count($"*")),
+    filter = "part1 = 1",
+    groupBy = Seq("part2"),
+    result = Seq(Row("a", 1), Row("b", 1), Row("c", 1), Row(null, 1)),
+    outputFields = Seq("part2", "COUNT(*)"))
+
+  checkPushedLogAggregations(
+    "count field without nulls",
+    Seq(count("num")),
+    result = Seq(Row(8)),
+    outputFields = Seq("COUNT(num)"))
+
+  checkPushedLogAggregations(
+    "count field with nulls",
+    Seq(count("str")),
+    result = Seq(Row(6)),
+    outputFields = Seq("COUNT(str)"))
+  
+  checkPushedLogAggregations(
+    "min of numeric field",
+    Seq(min("num")),
+    result = Seq(Row(1)),
+    outputFields = Seq("MIN(num)"))
+
+  checkPushedLogAggregations(
+    "max of numeric field",
+    Seq(max("num")),
+    result = Seq(Row(8)),
+    outputFields = Seq("MAX(num)"))
 }
 
 class AggregatePushDownSuite extends AggregatePushDownSuiteBase

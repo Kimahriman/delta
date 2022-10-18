@@ -16,27 +16,20 @@
 
 package org.apache.spark.sql.delta.catalog
 
-import org.apache.spark.sql.delta.OptimisticTransaction
-import org.apache.spark.sql.delta.actions.Metadata
 import org.apache.spark.sql.delta.metering.DeltaLogging
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.Expression
-import org.apache.spark.sql.connector.read.{Batch, InputPartition, PartitionReader, PartitionReaderFactory, Scan}
-import org.apache.spark.sql.execution.datasources.PartitioningAwareFileIndex
-import org.apache.spark.sql.execution.datasources.v2.FileScan
-import org.apache.spark.sql.execution.datasources.v2.parquet.{ParquetScan, ParquetPartitionReaderFactory}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.connector.read.LocalScan
+import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
+import org.apache.spark.sql.internal.connector.SupportsMetadata
 
 case class DeltaLogScan(
     sparkSession: SparkSession,
-    transaction: Option[OptimisticTransaction])
+    pushedAggregate: Aggregation,
+    readSchema: StructType,
+    rows: Array[InternalRow])
     extends LocalScan
-    with DeltaLogging {
-
-  override def readSchema(): StructType = new StructType()
-
-  override def rows(): Array[InternalRow] = Array.empty
-}
+    with SupportsMetadata
+    with DeltaLogging {}
