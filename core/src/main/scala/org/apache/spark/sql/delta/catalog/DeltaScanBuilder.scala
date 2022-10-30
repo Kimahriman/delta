@@ -22,21 +22,19 @@ import org.apache.spark.sql.delta.files.{TahoeFileIndex, TahoeLogFileIndex}
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.stats.{DeltaScan, DeltaScanGenerator, PreparedDeltaFileIndex, PrepareDeltaScanBase}
 
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{SparkSession, AnalysisException}
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Expression, PredicateHelper}
+import org.apache.spark.sql.connector.expressions
 import org.apache.spark.sql.connector.expressions.NamedReference
-import org.apache.spark.sql.connector.expressions.aggregate.{Aggregation, Count, CountStar}
+import org.apache.spark.sql.connector.expressions.aggregate._
 import org.apache.spark.sql.connector.read.Scan
 import org.apache.spark.sql.execution.datasources.{LogicalRelation, PartitioningAwareFileIndex}
 import org.apache.spark.sql.execution.datasources.v2.parquet.{ParquetScan, ParquetScanBuilder}
-import org.apache.spark.sql.functions.{col, max, min, sum}
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.functions.{col, count, max, min, sum}
+import org.apache.spark.sql.types.{LongType, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
-import org.apache.spark.sql.connector.expressions.NamedReference
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.AnalysisException
-import org.apache.spark.sql.connector.expressions.aggregate.Max
-import org.apache.spark.sql.connector.expressions.aggregate.Min
+import org.apache.spark.sql.catalyst.expressions.NamedExpression
 
 /**
  * The scan builder for V2 Delta table reads. Mostly serves the same purpose as the
@@ -69,14 +67,13 @@ class DeltaScanBuilder(
       // Can't push aggregation with data filters
       return false
     }
-    // Only count(*) is supported right now
+
     val aggsSupported = aggregation.aggregateExpressions().forall {
       case _: CountStar => true
-      case _: Count | _: Min | _: Max => true
+      case DirectAggregationFunc(_: Count | _: Min | _: Max, _) => true
       case _ => false
     }
 
-    val groupByReferences = aggregation.groupByExpressions().flatMap(_.references)
     val isGroupByPartition = aggregation.groupByExpressions().forall { expr =>
       expr match {
         case ref: NamedReference =>
@@ -103,33 +100,59 @@ class DeltaScanBuilder(
     val aggColumns = aggregation.aggregateExpressions().map { expr =>
       expr match {
         case _: CountStar =>
-          sum("stats.numRecords").alias("COUNT(*)")
-        case c: Count =>
-          val field = c.children().head.asInstanceOf[NamedReference].fieldNames.mkString(".")
-          (sum("stats.numRecords") - sum(s"stats.nullCount.$field"))
-            .alias(s"COUNT($field)")
-        case m: Max =>
-          val field = m.children().head.asInstanceOf[NamedReference].fieldNames.mkString(".")
-          max(f"stats.maxValues.$field").alias(s"MAX($field)")
-        case m: Min =>
-          val field = m.children().head.asInstanceOf[NamedReference].fieldNames.mkString(".")
-          min(f"stats.maxValues.$field").alias(s"MIN($field)")
+          // Every file needs to have numRecords populated
+          (sum("stats.numRecords").alias("COUNT(*)"), count(col("stats.numRecords")))
+        case DirectAggregationFunc(_: Count, field) =>
+          // Every file needs to have numRecords and nullCount populated
+          val nonNullCount = sum(col("stats.numRecords") - col(s"stats.nullCount.$field"))
+          (nonNullCount.alias(s"COUNT($field)"),
+            count(col("stats.numRecords") - col(s"stats.nullCount.$field")))
+        case DirectAggregationFunc(_: Max, field) =>
+          val maxAgg = max(s"stats.maxValues.$field").alias(s"MAX($field)")
+          // A max stat is valid if it is not null or if all values in the file are null. Casting
+          // the boolean to a Long will give us a 1 in the file is valid, and a 0 otherwise, so
+          // we can sum that value
+          val maxCheck = col(s"stats.maxValues.$field").isNotNull ||
+            (col("stats.numRecords") == col(s"stats.nullCount.$field"))
+          (maxAgg, sum(maxCheck.cast(LongType)))
+        case DirectAggregationFunc(_: Min, field) =>
+          val minAgg = min(s"stats.minValues.$field").alias(s"MIN($field)")
+          // A min stat is valid if it is not null or if all values in the file are null. Casting
+          // the boolean to a Long will give us a 1 in the file is valid, and a 0 otherwise, so
+          // we can sum that value
+          val minCheck = col(s"stats.minValues.$field").isNotNull ||
+            (col("stats.numRecords") == col(s"stats.nullCount.$field"))
+          (minAgg, sum(minCheck.cast(LongType)))
         case _ =>
           throw new AnalysisException("Temporary")
       }
     }
 
+    // Values are the result, checks will tell us if the result is accurate
+    val aggValues = aggColumns.map(_._1)
+    val aggChecks = aggColumns.map(_._2)
+
     val scanGenerator = getDeltaScanGenerator(deltaFileIndex.asInstanceOf[TahoeLogFileIndex])
     val filesWithStats = scanGenerator.filesWithStatsForScan(partitionFilters)
 
     val aggResult = filesWithStats
+      .observe("stats", count(col("*")).alias("numFiles"), aggChecks: _*)
       .groupBy(groupByColumns: _*)
-      .agg(aggColumns.head, aggColumns.tail: _*)
+      .agg(aggValues.head, aggValues.tail: _*)
 
     pushedAggregationSchema = Some(aggResult.schema)
 
-    withStatusCode("DELTA", "Building aggregation from log") {
-      Some(aggResult.queryExecution.executedPlan.executeCollect())
+    val aggRows = withStatusCode("DELTA", "Building aggregation from log") {
+      aggResult.queryExecution.executedPlan.executeCollect()
+    }
+    val metrics = aggResult.queryExecution.observedMetrics.get("stats").get
+
+    // All metrics should equal the count of the files
+    val aggIsValid = metrics.toSeq.tail.forall(_ == metrics.getLong(0))
+    if (aggIsValid) {
+      Some(aggRows)
+    } else {
+      None
     }
   }
 
@@ -263,6 +286,19 @@ class DeltaScanBuilder(
         readPartitionSchema = prepareSchema(parquetScan.readPartitionSchema))
 
       DeltaTableScan(sparkSession, parquetScan, readDataSchema, readPartitionSchema, transaction)
+    }
+  }
+}
+
+/**
+ * Extractor for aggregation functions applied directly to a single column
+ */
+object DirectAggregationFunc {
+  def unapply(aggFunc: AggregateFunc): Option[(AggregateFunc, String)] = {
+    if (aggFunc.children().length == 1 && aggFunc.children().head.isInstanceOf[NamedReference]) {
+      Some(aggFunc, aggFunc.children().head.asInstanceOf[NamedReference].fieldNames.mkString("."))
+    } else {
+      None
     }
   }
 }

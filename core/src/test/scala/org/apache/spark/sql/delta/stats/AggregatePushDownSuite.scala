@@ -19,33 +19,27 @@ package org.apache.spark.sql.delta.stats
 import java.io.File
 
 import org.apache.spark.sql.delta._
-import org.apache.spark.sql.delta.catalog.DeltaTableScan
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 import org.apache.spark.sql.delta.test.ScanReportHelper
-import org.scalatest.GivenWhenThen
 
 // scalastyle:off import.ordering.noEmptyLine
 import org.apache.spark.SparkConf
 import org.apache.spark.sql._
 import org.apache.spark.sql.execution.LocalTableScanExec
-import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.util.Utils
 
 trait AggregatePushDownSuiteBase extends QueryTest
     with SharedSparkSession
     with DeltaSQLCommandTest
-    with GivenWhenThen
     with ScanReportHelper {
 
   import testImplicits._
 
   protected override def sparkConf: SparkConf =
     super.sparkConf
-      // .set(SQLConf.PARQUET_AGGREGATE_PUSHDOWN_ENABLED.key, "true")
       .set(DeltaSQLConf.V2_READER_ENABLED.key, "true")
 
   var tempDir: File = _
@@ -62,17 +56,14 @@ trait AggregatePushDownSuiteBase extends QueryTest
     (1, "c", 7, null),
     (1, null, 8, "ghi"))
 
+  def writeData(): Unit
+
+  def fullStats: Boolean
+
   override def beforeAll(): Unit = {
     super.beforeAll()
     tempDir = Utils.createTempDir()
-    // spark.range(10)
-    data.toDF("part1", "part2", "num", "str")
-        // .withColumn("part", $"id" % 2)
-        .write
-        .format("delta")
-        .partitionBy("part1", "part2")
-        .mode("append")
-        .save(tempDir.getCanonicalPath())
+    writeData()
   }
 
   override def afterAll(): Unit = {
@@ -91,7 +82,6 @@ trait AggregatePushDownSuiteBase extends QueryTest
     outputFields: Seq[String] = Seq.empty
   ): Unit = {
     test(s"Aggregates are pushed down to Delta Log - $name") {
-      df.filter(filter).groupBy(groupBy.map(col): _*).agg(aggs.head, aggs.tail: _*).explain()
       val plans = DeltaTestUtils.withPhysicalPlansCaptured(spark) {
         checkAnswer(
           df.filter(filter).groupBy(groupBy.map(col): _*).agg(aggs.head, aggs.tail: _*),
@@ -101,10 +91,14 @@ trait AggregatePushDownSuiteBase extends QueryTest
       val scans = plans.flatMap(_.collect {
         case s: LocalTableScanExec => s
       })
-      assert(scans.length == 1)
-      assert(scans.head.output.length == outputFields.length)
-      scans.head.output.zip(outputFields).foreach { case (attr, name) =>
-        assert(attr.name == name)
+      if (fullStats) {
+        assert(scans.length == 1)
+        assert(scans.head.output.length == outputFields.length)
+        scans.head.output.zip(outputFields).foreach { case (attr, name) =>
+          assert(attr.name == name)
+        }
+      } else {
+        assert(scans.length == 0)
       }
     }
   }
@@ -170,4 +164,39 @@ trait AggregatePushDownSuiteBase extends QueryTest
     outputFields = Seq("MAX(num)"))
 }
 
-class AggregatePushDownSuite extends AggregatePushDownSuiteBase
+class AggregatePushDownFullStatsSuite extends AggregatePushDownSuiteBase {
+  
+  import testImplicits._
+
+  override def fullStats: Boolean = true
+  
+  override def writeData(): Unit = {
+    data.toDF("part1", "part2", "num", "str")
+      .repartition($"part1", $"part2")
+      .write
+      .format("delta")
+      .partitionBy("part1", "part2")
+      .mode("append")
+      .save(tempPath)
+  }
+}
+
+class AggregatePushDownNoStatsSuite extends AggregatePushDownSuiteBase {
+  
+  import testImplicits._
+  
+  override def fullStats: Boolean = false
+
+  protected override def sparkConf: SparkConf =
+    super.sparkConf
+      .set(DeltaSQLConf.DELTA_COLLECT_STATS.key, "false")
+
+  override def writeData(): Unit = {
+    data.toDF("part1", "part2", "num", "str")
+      .write
+      .format("delta")
+      .partitionBy("part1", "part2")
+      .mode("append")
+      .save(tempPath)
+  }
+}
