@@ -44,7 +44,7 @@ trait AggregatePushDownSuiteBase extends QueryTest
 
   var tempDir: File = _
 
-  def tempPath = tempDir.getCanonicalPath()
+  def tempPath: String = tempDir.getCanonicalPath()
 
   val data = Seq(
     (0, "a", 1, "xyx"),
@@ -105,7 +105,7 @@ trait AggregatePushDownSuiteBase extends QueryTest
 
   checkPushedLogAggregations(
     "No filter or group by",
-    Seq(count("*")),
+    Seq(count($"*")),
     result = Seq(Row(8)),
     outputFields = Seq("COUNT(*)"))
 
@@ -115,7 +115,7 @@ trait AggregatePushDownSuiteBase extends QueryTest
     groupBy = Seq("part1"),
     result = Seq(Row(0, 4), Row(1, 4)),
     outputFields = Seq("part1", "COUNT(*)"))
-  
+
   checkPushedLogAggregations(
     "Group on a multiple partitions",
     Seq(count($"*")),
@@ -130,7 +130,7 @@ trait AggregatePushDownSuiteBase extends QueryTest
     filter = "part1 = 1",
     result = Seq(Row(4)),
     outputFields = Seq("COUNT(*)"))
-  
+
   checkPushedLogAggregations(
     "Filter and group on partition",
     Seq(count($"*")),
@@ -141,16 +141,16 @@ trait AggregatePushDownSuiteBase extends QueryTest
 
   checkPushedLogAggregations(
     "count field without nulls",
-    Seq(count("num")),
+    Seq(count($"num")),
     result = Seq(Row(8)),
     outputFields = Seq("COUNT(num)"))
 
   checkPushedLogAggregations(
     "count field with nulls",
-    Seq(count("str")),
+    Seq(count($"str")),
     result = Seq(Row(6)),
     outputFields = Seq("COUNT(str)"))
-  
+
   checkPushedLogAggregations(
     "min of numeric field",
     Seq(min("num")),
@@ -165,11 +165,11 @@ trait AggregatePushDownSuiteBase extends QueryTest
 }
 
 class AggregatePushDownFullStatsSuite extends AggregatePushDownSuiteBase {
-  
+
   import testImplicits._
 
   override def fullStats: Boolean = true
-  
+
   override def writeData(): Unit = {
     data.toDF("part1", "part2", "num", "str")
       .repartition($"part1", $"part2")
@@ -182,9 +182,9 @@ class AggregatePushDownFullStatsSuite extends AggregatePushDownSuiteBase {
 }
 
 class AggregatePushDownNoStatsSuite extends AggregatePushDownSuiteBase {
-  
+
   import testImplicits._
-  
+
   override def fullStats: Boolean = false
 
   protected override def sparkConf: SparkConf =
