@@ -562,7 +562,7 @@ case class DeltaSource(
               actions, version, verifyMetadataAction)
 
             (Iterator.single(IndexedFile(version, -1, null)) ++ addFiles
-              .map(_.asInstanceOf[AddFile])
+              .map(_.asInstanceOf[AddFile].copy(stats = null))
               .zipWithIndex.map { case (action, index) =>
               IndexedFile(version, index.toLong, action, isLast = index + 1 == addFiles.size)
             }).toClosable
@@ -585,7 +585,7 @@ case class DeltaSource(
                 case _ => false
               }
               Iterator.single(IndexedFile(version, -1, null)) ++ addFiles
-                .map(_.asInstanceOf[AddFile])
+                .map(_.asInstanceOf[AddFile].copy(stats = null))
                 .zipWithIndex
                 .map { case (action, index) =>
                   IndexedFile(version, index.toLong, action, isLast = !addFiles.hasNext)
