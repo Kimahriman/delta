@@ -87,7 +87,7 @@ class Snapshot(
   /** Snapshot to scan by the DeltaScanGenerator for metadata query optimizations */
   override val snapshotToScan: Snapshot = this
 
-  protected def getNumPartitions: Int = {
+  private[delta] def getNumPartitions: Int = {
     spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_SNAPSHOT_PARTITIONS)
       .getOrElse(Snapshot.defaultNumSnapshotPartitions)
   }
