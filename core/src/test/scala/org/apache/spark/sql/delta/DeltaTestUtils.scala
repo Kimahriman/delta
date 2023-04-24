@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.delta
 
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 
 import org.apache.spark.sql.delta.DeltaTestUtils.Plans
@@ -234,6 +235,10 @@ trait DeltaTestUtilsForTempViews
     }
   }
 
+  protected def errorContains(errMsg: String, str: String): Unit = {
+    assert(errMsg.toLowerCase(Locale.ROOT).contains(str.toLowerCase(Locale.ROOT)))
+  }
+
   def testErrorMessageAndClass(
       isSQLTempView: Boolean,
       ex: AnalysisException,
@@ -243,14 +248,14 @@ trait DeltaTestUtilsForTempViews
       expectedErrorClassForDataSetTempView: String = null): Unit = {
     if (isSQLTempView) {
       if (expectedErrorMsgForSQLTempView != null) {
-        assert(ex.getMessage.contains(expectedErrorMsgForSQLTempView))
+        errorContains(ex.getMessage, expectedErrorMsgForSQLTempView)
       }
       if (expectedErrorClassForSQLTempView != null) {
         assert(ex.getErrorClass == expectedErrorClassForSQLTempView)
       }
     } else {
       if (expectedErrorMsgForDataSetTempView != null) {
-        assert(ex.getMessage.contains(expectedErrorMsgForDataSetTempView))
+        errorContains(ex.getMessage, expectedErrorMsgForDataSetTempView)
       }
       if (expectedErrorClassForDataSetTempView != null) {
         assert(ex.getErrorClass == expectedErrorClassForDataSetTempView, ex.getMessage)
