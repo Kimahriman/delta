@@ -21,7 +21,7 @@ import java.util.UUID
 import scala.collection.generic.Sizing
 
 import org.apache.spark.sql.catalyst.expressions.aggregation.BitmapAggregator
-import org.apache.spark.sql.delta.{DeltaLog, DeltaParquetFileFormat, DeltaUDF, OptimisticTransaction, Snapshot}
+import org.apache.spark.sql.delta.{DeltaLog, DeltaParquetFileFormat, DeltaUDF, OptimisticTransaction}
 import org.apache.spark.sql.delta.DeltaParquetFileFormat._
 import org.apache.spark.sql.delta.actions.{AddFile, DeletionVectorDescriptor, FileAction}
 import org.apache.spark.sql.delta.deletionvectors.{RoaringBitmapArray, RoaringBitmapArrayFormat, StoredBitmap}
@@ -34,9 +34,9 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 
 import org.apache.spark.sql.{Column, DataFrame, Dataset, Encoder, SparkSession}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, FileSourceMetadataAttribute}
 import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, Project}
-import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, LogicalRelation}
+import org.apache.spark.sql.execution.datasources.{FileFormat, HadoopFsRelation, LogicalRelation}
 import org.apache.spark.sql.execution.datasources.FileFormat.{FILE_PATH, METADATA_NAME}
 import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.types.StructType
@@ -83,7 +83,7 @@ object DeleteWithDeletionVectorsHelper extends DeltaCommand {
         hfsr @ HadoopFsRelation(_, _, _, _, format: DeltaParquetFileFormat, _), _, _, _) =>
         // Take the existing schema and add additional metadata columns
         val newDataSchema = StructType(hfsr.dataSchema).add(ROW_INDEX_STRUCT_FILED)
-        val finalOutput = l.output ++ Seq(rowIndexColumn)
+        val finalOutput = l.output ++ additionalCols
         // Disable splitting and filter pushdown in order to generate the row-indexes
         val newFormat = format.copy(isSplittable = false, disablePushDowns = true)
 
@@ -94,7 +94,7 @@ object DeleteWithDeletionVectorsHelper extends DeltaCommand {
 
         l.copy(relation = newBaseRelation, output = finalOutput)
       case p @ Project(projectList, _) =>
-        val newProjectList = projectList ++ Seq(rowIndexColumn)
+        val newProjectList = projectList ++ additionalCols
         p.copy(projectList = newProjectList)
     }
     newTarget
