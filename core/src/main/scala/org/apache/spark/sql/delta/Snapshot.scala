@@ -307,8 +307,15 @@ class Snapshot(
   }
 
   protected def getNumPartitions: Int = {
-    spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_SNAPSHOT_PARTITIONS)
-      .getOrElse(Snapshot.defaultNumSnapshotPartitions)
+    val snapshotPartitions =
+      spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_SNAPSHOT_PARTITIONS)
+    val snapshotPartitionSize =
+      spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_SNAPSHOT_PARTITION_SIZE)
+
+    snapshotPartitions.orElse(snapshotPartitionSize.map { sizePerPartition =>
+      val logFileSize = deltaFileSizeInBytes + checkpointSizeInBytes
+      (logFileSize / sizePerPartition).toInt + 1
+    }).getOrElse(Snapshot.defaultNumSnapshotPartitions)
   }
 
   /**

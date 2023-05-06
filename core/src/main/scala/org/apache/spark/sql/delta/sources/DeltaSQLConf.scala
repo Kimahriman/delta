@@ -137,6 +137,17 @@ trait DeltaSQLConfBase {
       .checkValue(n => n > 0, "Delta snapshot partition number must be positive.")
       .createOptional
 
+  val DELTA_SNAPSHOT_PARTITION_SIZE =
+    buildConf("snapshotPartitionSize")
+      .internal()
+      .doc("Size of data (in bytes) from the Delta Log that should be in each snapshot " +
+        "partition. This lets you dynamically size the number of partitions to use for caching " +
+        "a snapshot based on the size of the transaction log. `snapshotPartitions` takes " +
+        "precedence if defined")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(n => n > 0, "Delta snapshot partition size number must be positive.")
+      .createOptional
+
   val DELTA_SNAPSHOT_LOADING_MAX_RETRIES =
     buildConf("snapshotLoading.maxRetries")
       .internal()
