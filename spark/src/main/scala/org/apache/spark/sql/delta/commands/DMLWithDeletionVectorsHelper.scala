@@ -45,7 +45,6 @@ import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.{SerializableConfiguration, Utils => SparkUtils}
 
-
 /**
  * Contains utility classes and method for performing DML operations with Deletion Vectors.
  */

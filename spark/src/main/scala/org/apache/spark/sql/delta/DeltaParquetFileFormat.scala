@@ -192,11 +192,11 @@ case class DeltaParquetFileFormat(
   }
 
   override def metadataSchemaFields: Seq[StructField] = {
-    // Parquet reader in Spark has a bug where a file containing 2b+ rows in a single rowgroup
-    // causes it to run out of the `Integer` range (TODO: Create a SPARK issue)
-    // For Delta Parquet readers don't expose the row_index field as a metadata field.
+    // TODO: Check with RyanJohnson or Johan Lasperas
+    // The issue seems be due to SPARK-42918
     super.metadataSchemaFields.filter(field => field != ParquetFileFormat.ROW_INDEX_FIELD)
   }
+
   def copyWithDVInfo(
       tablePath: String,
       broadcastDvMap: Broadcast[Map[URI, DeletionVectorDescriptorWithFilterType]],

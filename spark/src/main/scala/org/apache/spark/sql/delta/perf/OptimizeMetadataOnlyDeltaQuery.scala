@@ -25,7 +25,6 @@ import org.apache.spark.sql.delta.DeltaTable
 import org.apache.spark.sql.delta.files.TahoeLogFileIndex
 import org.apache.spark.sql.delta.stats.DeltaScanGenerator
 import org.apache.spark.sql.functions.{coalesce, col, count, lit, sum, when}
-import org.apache.spark.sql.types.StringType
 import org.apache.spark.unsafe.types.UTF8String
 
 trait OptimizeMetadataOnlyDeltaQuery {

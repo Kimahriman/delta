@@ -38,8 +38,7 @@ import org.json4s.JValue
 
 import org.apache.spark.{SparkConf, SparkEnv, SparkException}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
-import org.apache.spark.sql.catalyst.ExtendedAnalysisException
-import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.{ExtendedAnalysisException, TableIdentifier}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression}
