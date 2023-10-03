@@ -168,7 +168,7 @@ object DeltaShufflePartitionsUtil {
       case p@AdaptiveSparkPlanExec(inputPlan: ShuffleExchangeExec, _, _, _, _)
         if !inputPlan.shuffleOrigin.equals(ENSURE_REQUIREMENTS) =>
         p.copy(inputPlan = inputPlan.child)
-      case ShuffleExchangeExec(_, child, shuffleOrigin)
+      case ShuffleExchangeExec(_, child, shuffleOrigin, _)
         if !shuffleOrigin.equals(ENSURE_REQUIREMENTS) =>
         child
       case AdaptiveSparkPlanExec(inputPlan: CoalesceExec, _, _, _, _) =>

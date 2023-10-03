@@ -289,7 +289,7 @@ class DeltaAutoOptimizeSuite extends QueryTest with SharedSparkSession with Delt
             val plan = repartitionDF.queryExecution.executedPlan
             // Plan should have ShuffleExchangeExec.
             val isShuffle = plan match {
-              case ShuffleExchangeExec(_, _, shuffleOrigin)
+              case ShuffleExchangeExec(_, _, shuffleOrigin, _)
                 if shuffleOrigin.equals(REPARTITION_BY_NUM) => true
               case _ => false
             }
@@ -319,7 +319,7 @@ class DeltaAutoOptimizeSuite extends QueryTest with SharedSparkSession with Delt
           // Plan should have ShuffleExchangeExec.
           val inputPlan = plan.asInstanceOf[AdaptiveSparkPlanExec].inputPlan
           val isShuffle = inputPlan match {
-            case ShuffleExchangeExec(_, _, shuffleOrigin)
+            case ShuffleExchangeExec(_, _, shuffleOrigin, _)
               if shuffleOrigin.equals(REPARTITION_BY_NUM) => true
             case _ => false
           }
