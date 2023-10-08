@@ -1,1 +1,1 @@
-ThisBuild / version := "3.0.0rc1-optimize"
+ThisBuild / version := "3.1.0rc0-optimized-writes"
