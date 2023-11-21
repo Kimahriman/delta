@@ -112,6 +112,8 @@ case class DeltaOptimizedWriterExec(
     val maxBinSize =
       ByteUnit.BYTE.convertFrom(getConf(DeltaSQLConf.DELTA_OPTIMIZE_WRITE_BIN_SIZE), ByteUnit.MiB)
 
+    logWarning(s"Total shuffle blocks: ${shuffleStats.length}")
+
     val bins = shuffleStats.toSeq.flatMap(_._2).groupBy(_._1.asInstanceOf[ShuffleBlockId].reduceId)
       .flatMap { case (_, blocks) =>
         BinPackingUtils.binPackBySize[(BlockId, Long, Int), BlockId](
@@ -133,6 +135,7 @@ case class DeltaOptimizedWriterExec(
             bmId, new ArrayBuffer[(BlockId, Long, Int)]())
           blocksAtBM.append((blockId, size, index))
         }
+        logWarning(s"Bin has ${bin.length} blocks with total size ${binSize}")
         (binSize, blockLocations.toList)
       }
       .toArray
