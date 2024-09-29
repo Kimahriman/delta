@@ -623,6 +623,44 @@ class DeltaTable(object):
             getattr(self._spark, "_wrapped", self._spark)  # type: ignore[attr-defined]
         )
 
+    @since(3.3)
+    def clone(
+        self,
+        target: str,
+        replace: bool = False,
+        properties: Optional[Dict[str, str]] = None
+    ) -> "DeltaTable":
+        return DataFrame(
+            self._jdt.clone(target, replace, properties or {}),
+            getattr(self._spark, "_wrapped", self._spark)  # type: ignore[attr-defined]
+        )
+
+    @since(3.3)
+    def cloneAtVersion(
+        self,
+        version: int,
+        target: str,
+        replace: bool = False,
+        properties: Optional[Dict[str, str]] = None
+    ) -> "DeltaTable":
+        return DataFrame(
+            self._jdt.cloneAtVersion(version, target, replace, properties or {}),
+            getattr(self._spark, "_wrapped", self._spark)  # type: ignore[attr-defined]
+        )
+
+    @since(3.3)
+    def cloneAtTimestamp(
+        self,
+        timestamp: str,
+        target: str,
+        replace: bool = False,
+        properties: Optional[Dict[str, str]] = None
+    ) -> "DeltaTable":
+        return DataFrame(
+            self._jdt.cloneAtTimestamp(timestamp, target, replace, properties or {}),
+            getattr(self._spark, "_wrapped", self._spark)  # type: ignore[attr-defined]
+        )
+
     @since(2.0)  # type: ignore[arg-type]
     def optimize(self) -> "DeltaOptimizeBuilder":
         """
