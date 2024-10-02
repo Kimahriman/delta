@@ -1377,6 +1377,13 @@ class DeltaTableTestsMixin:
         self.assertEqual('all', metrics.zOrderStats.strategyName)
         self.assertEqual(1, metrics.zOrderStats.numOutputCubes)  # one per each affected partition
 
+    def test_clone(self) -> None:
+        self.__writeDeltaTable([('a', 1), ('b', 2), ('c', 3), ('d', 4)])
+        dt = DeltaTable.forPath(self.spark, self.tempFile)
+
+        cloned = dt.clone(os.path.join(self.tempPath, "clone"))
+        self.__checkAnswer(cloned.toDF(), dt.toDF.collect())
+
     def __checkAnswer(self, df: DataFrame,
                       expectedAnswer: List[Any],
                       schema: Union[StructType, List[str]] = ["key", "value"]) -> None:
