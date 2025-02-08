@@ -286,7 +286,7 @@ trait MergeIntoCommandBase extends LeafRunnableCommand
     // repartition. Optimized writes can handle both splitting very large tasks and coalescing
     // very small ones.
     if (partitionColumns.nonEmpty && spark.conf.get(DeltaSQLConf.MERGE_REPARTITION_BEFORE_WRITE)
-      && !TransactionalWrite.shouldOptimizeWrite(txn.metadata, spark.sessionState.conf)) {
+      && !WriteIntoDeltaCommand.shouldOptimizeWrite(txn.metadata, spark.sessionState.conf)) {
       txn.writeFiles(outputDF.repartition(partitionColumns.map(col): _*))
     } else {
       txn.writeFiles(outputDF)

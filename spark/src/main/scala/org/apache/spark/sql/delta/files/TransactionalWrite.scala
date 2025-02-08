@@ -20,11 +20,11 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions._
+import org.apache.spark.sql.delta.commands.WriteIntoDeltaCommand
 import org.apache.spark.sql.delta.commands.cdc.CDCReader
-import org.apache.spark.sql.delta.constraints.{Constraint, Constraints, DeltaInvariantCheckerExec}
+import org.apache.spark.sql.delta.constraints.{Constraint, Constraints}
 import org.apache.spark.sql.delta.hooks.AutoCompact
 import org.apache.spark.sql.delta.metering.DeltaLogging
-import org.apache.spark.sql.delta.perf.DeltaOptimizedWriterExec
 import org.apache.spark.sql.delta.schema._
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.sources.DeltaSQLConf.DELTA_COLLECT_STATS_USING_TABLE_SCHEMA
@@ -39,11 +39,9 @@ import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.types.DataTypeUtils.toAttributes
-import org.apache.spark.sql.connector.catalog._
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, FileFormatWriter, WriteJobStatsTracker}
+import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, WriteJobStatsTracker}
 import org.apache.spark.sql.functions.{col, to_json}
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.util.SerializableConfiguration
 
@@ -186,45 +184,6 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
       output.find(f => f.name == col.name).get
     }
     partitionColumns
-  }
-
-  /**
-   * If there is any string partition column and there are constraints defined, add a projection to
-   * convert empty string to null for that column. The empty strings will be converted to null
-   * eventually even without this convert, but we want to do this earlier before check constraints
-   * so that empty strings are correctly rejected. Note that this should not cause the downstream
-   * logic in `FileFormatWriter` to add duplicate conversions because the logic there checks the
-   * partition column using the original plan's output. When the plan is modified with additional
-   * projections, the partition column check won't match and will not add more conversion.
-   *
-   * @param plan The original SparkPlan.
-   * @param partCols The partition columns.
-   * @param constraints The defined constraints.
-   * @return A SparkPlan potentially modified with an additional projection on top of `plan`
-   */
-  protected def convertEmptyToNullIfNeeded(
-      plan: SparkPlan,
-      partCols: Seq[Attribute],
-      constraints: Seq[Constraint]): SparkPlan = {
-    if (!spark.conf.get(DeltaSQLConf.CONVERT_EMPTY_TO_NULL_FOR_STRING_PARTITION_COL)) {
-      return plan
-    }
-    // No need to convert if there are no constraints. The empty strings will be converted later by
-    // FileFormatWriter and FileFormatDataWriter. Note that we might still do unnecessary convert
-    // here as the constraints might not be related to the string partition columns. A precise
-    // check will need to walk the constraints to see if such columns are really involved. It
-    // doesn't seem to worth the effort.
-    if (constraints.isEmpty) return plan
-
-    val partSet = AttributeSet(partCols)
-    var needConvert = false
-    val projectList: Seq[NamedExpression] = plan.output.map {
-      case p if partSet.contains(p) && p.dataType == StringType =>
-        needConvert = true
-        Alias(org.apache.spark.sql.catalyst.expressions.Empty2Null(p), p.name)()
-      case attr => attr
-    }
-    if (needConvert) ProjectExec(projectList, plan) else plan
   }
 
   def writeFiles(
@@ -425,75 +384,38 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
       trackIdentityHighWaterMarks
     )
 
-    SQLExecution.withNewExecutionId(queryExecution, Option("deltaTransactionalWrite")) {
-      val outputSpec = FileFormatWriter.OutputSpec(
-        outputPath.toString,
-        Map.empty,
-        output)
+    val statsTrackers: ListBuffer[WriteJobStatsTracker] = ListBuffer()
 
-      val empty2NullPlan = convertEmptyToNullIfNeeded(queryExecution.executedPlan,
-        partitioningColumns, constraints)
-      val checkInvariants = DeltaInvariantCheckerExec(empty2NullPlan, constraints)
-      // No need to plan optimized write if the write command is OPTIMIZE, which aims to produce
-      // evenly-balanced data files already.
-      val physicalPlan = if (!isOptimize &&
-        shouldOptimizeWrite(writeOptions, spark.sessionState.conf)) {
-        DeltaOptimizedWriterExec(checkInvariants, metadata.partitionColumns, deltaLog)
-      } else {
-        checkInvariants
-      }
+    if (spark.conf.get(DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED)) {
+      val basicWriteJobStatsTracker = new BasicWriteJobStatsTracker(
+        new SerializableConfiguration(deltaLog.newDeltaHadoopConf()),
+        BasicWriteJobStatsTracker.metrics)
+      registerSQLMetrics(spark, basicWriteJobStatsTracker.driverSideMetrics)
+      statsTrackers.append(basicWriteJobStatsTracker)
+    }
 
-      val statsTrackers: ListBuffer[WriteJobStatsTracker] = ListBuffer()
+    val writeInto = WriteIntoDeltaCommand(
+      deltaLog,
+      queryExecution.analyzed,
+      writeOptions,
+      isOptimize,
+      protocol,
+      metadata,
+      committer,
+      partitioningColumns,
+      constraints,
+      statsTrackers = optionalStatsTracker.toSeq
+        ++ statsTrackers
+        ++ identityTrackerOpt.toSeq
+    )
+    val writeExecution = new QueryExecution(spark, writeInto)
+    writeExecution.assertCommandExecuted()
 
-      if (spark.conf.get(DeltaSQLConf.DELTA_HISTORY_METRICS_ENABLED)) {
-        val basicWriteJobStatsTracker = new BasicWriteJobStatsTracker(
-          new SerializableConfiguration(deltaLog.newDeltaHadoopConf()),
-          BasicWriteJobStatsTracker.metrics)
-        registerSQLMetrics(spark, basicWriteJobStatsTracker.driverSideMetrics)
-        statsTrackers.append(basicWriteJobStatsTracker)
-      }
-
-      // Iceberg spec requires partition columns in data files
-      val writePartitionColumns = IcebergCompat.isAnyEnabled(metadata)
-      // Retain only a minimal selection of Spark writer options to avoid any potential
-      // compatibility issues
-      val options = (writeOptions match {
-        case None => Map.empty[String, String]
-        case Some(writeOptions) =>
-          writeOptions.options.filterKeys { key =>
-            key.equalsIgnoreCase(DeltaOptions.MAX_RECORDS_PER_FILE) ||
-              key.equalsIgnoreCase(DeltaOptions.COMPRESSION)
-          }.toMap
-      }) + (DeltaOptions.WRITE_PARTITION_COLUMNS -> writePartitionColumns.toString)
-
-      try {
-        DeltaFileFormatWriter.write(
-          sparkSession = spark,
-          plan = physicalPlan,
-          fileFormat = deltaLog.fileFormat(protocol, metadata), // TODO support changing formats.
-          committer = committer,
-          outputSpec = outputSpec,
-          // scalastyle:off deltahadoopconfiguration
-          hadoopConf =
-            spark.sessionState.newHadoopConfWithOptions(metadata.configuration ++ deltaLog.options),
-          // scalastyle:on deltahadoopconfiguration
-          partitionColumns = partitioningColumns,
-          bucketSpec = None,
-          statsTrackers = optionalStatsTracker.toSeq
-            ++ statsTrackers
-            ++ identityTrackerOpt.toSeq,
-          options = options)
-      } catch {
-        case InnerInvariantViolationException(violationException) =>
-          // Pull an InvariantViolationException up to the top level if it was the root cause.
-          throw violationException
-      }
-      statsTrackers.foreach {
-        case tracker: BasicWriteJobStatsTracker =>
-          val numOutputRowsOpt = tracker.driverSideMetrics.get("numOutputRows").map(_.value)
-          IdentityColumn.logTableWrite(snapshot, trackIdentityHighWaterMarks, numOutputRowsOpt)
-        case _ => ()
-      }
+    statsTrackers.foreach {
+      case tracker: BasicWriteJobStatsTracker =>
+        val numOutputRowsOpt = tracker.driverSideMetrics.get("numOutputRows").map(_.value)
+        IdentityColumn.logTableWrite(snapshot, trackIdentityHighWaterMarks, numOutputRowsOpt)
+      case _ => ()
     }
 
     var resultFiles =
@@ -533,25 +455,5 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
     }
 
     resultFiles.toSeq ++ committer.changeFiles
-  }
-
-  /**
-   * Optimized writes can be enabled/disabled through the following order:
-   *  - Through DataFrameWriter options
-   *  - Through SQL configuration
-   *  - Through the table parameter
-   */
-  private def shouldOptimizeWrite(
-      writeOptions: Option[DeltaOptions], sessionConf: SQLConf): Boolean = {
-    writeOptions.flatMap(_.optimizeWrite)
-      .getOrElse(TransactionalWrite.shouldOptimizeWrite(metadata, sessionConf))
-  }
-}
-
-object TransactionalWrite {
-  def shouldOptimizeWrite(metadata: Metadata, sessionConf: SQLConf): Boolean = {
-    sessionConf.getConf(DeltaSQLConf.DELTA_OPTIMIZE_WRITE_ENABLED)
-      .orElse(DeltaConfigs.OPTIMIZE_WRITE.fromMetaData(metadata))
-      .getOrElse(false)
   }
 }
