@@ -41,6 +41,7 @@ import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.types.DataTypeUtils.toAttributes
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, WriteJobStatsTracker}
+import org.apache.spark.sql.execution.streaming.IncrementalExecution
 import org.apache.spark.sql.functions.{col, to_json}
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.util.SerializableConfiguration
@@ -408,8 +409,12 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
         ++ statsTrackers
         ++ identityTrackerOpt.toSeq
     )
-    val writeExecution = new QueryExecution(spark, writeInto)
-    writeExecution.assertCommandExecuted()
+    val writeExecution = queryExecution match {
+      case i: IncrementalExecution =>
+        writeInto.run(spark, i.executedPlan)
+      case q =>
+        new QueryExecution(spark, writeInto).assertCommandExecuted()
+    }
 
     statsTrackers.foreach {
       case tracker: BasicWriteJobStatsTracker =>
