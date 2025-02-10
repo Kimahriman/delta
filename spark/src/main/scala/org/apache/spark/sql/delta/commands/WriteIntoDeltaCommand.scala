@@ -37,6 +37,7 @@ import org.apache.spark.sql.types.StringType
 case class WriteIntoDeltaCommand(
   deltaLog: DeltaLog,
   query: LogicalPlan,
+  outputSpec: FileFormatWriter.OutputSpec,
   writeOptions: Option[DeltaOptions],
   isOptimize: Boolean,
   protocol: Protocol,
@@ -52,10 +53,6 @@ case class WriteIntoDeltaCommand(
   def outputColumnNames: Seq[String] = output.map(_.name)
 
   def run(sparkSession: SparkSession, child: SparkPlan): Seq[Row] = {
-    val outputSpec = FileFormatWriter.OutputSpec(
-      deltaLog.dataPath.toString,
-      Map.empty,
-      output)
 
     val empty2NullPlan = convertEmptyToNullIfNeeded(child,
       partitioningColumns, deltaConstraints)

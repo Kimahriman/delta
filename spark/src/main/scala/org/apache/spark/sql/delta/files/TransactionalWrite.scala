@@ -40,7 +40,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.types.DataTypeUtils.toAttributes
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, WriteJobStatsTracker}
+import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, FileFormatWriter, WriteJobStatsTracker}
 import org.apache.spark.sql.execution.streaming.IncrementalExecution
 import org.apache.spark.sql.functions.{col, to_json}
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
@@ -395,9 +395,15 @@ trait TransactionalWrite extends DeltaLogging { self: OptimisticTransactionImpl 
       statsTrackers.append(basicWriteJobStatsTracker)
     }
 
+    val outputSpec = FileFormatWriter.OutputSpec(
+      deltaLog.dataPath.toString,
+      Map.empty,
+      output)
+
     val writeInto = WriteIntoDeltaCommand(
       deltaLog,
       queryExecution.analyzed,
+      outputSpec,
       writeOptions,
       isOptimize,
       protocol,
