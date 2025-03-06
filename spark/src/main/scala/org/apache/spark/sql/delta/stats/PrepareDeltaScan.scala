@@ -37,7 +37,7 @@ import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreePattern.PROJECT
 import org.apache.spark.sql.execution.datasources.{FileIndex, LogicalRelation}
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.util.ThreadUtils
 
 /**
  * Before query planning, we prepare any scans over delta tables by pushing
@@ -55,6 +55,9 @@ trait PrepareDeltaScanBase extends Rule[LogicalPlan]
   with DeltaLogging
   with OptimizeMetadataOnlyDeltaQuery
   with SubqueryTransformerHelper { self: PrepareDeltaScan =>
+
+  val prepareScanThreadPoolSize =
+    spark.sessionState.conf.getConf(DeltaSQLConf.PREPARE_DELTA_SCAN_THREADPOOL_SIZE)
 
   /**
    * Tracks the first-access snapshots of other logs planned by this rule. The snapshots are
@@ -137,20 +140,27 @@ trait PrepareDeltaScanBase extends Rule[LogicalPlan]
    * Prepares delta scans sequentially.
    */
   protected def prepareDeltaScan(plan: LogicalPlan): LogicalPlan = {
-    // A map from the canonicalized form of a DeltaTableScan operator to its corresponding delta
-    // scan. This map is used to avoid fetching duplicate delta indexes for structurally-equal
-    // delta scans.
-    val deltaScans = new mutable.HashMap[LogicalPlan, DeltaScan]()
+    val scans = plan.collect {
+      case scan @ DeltaTableScan(planWithRemovedProjections, filters, fileIndex, limit, delta) =>
+        val scanGenerator = getDeltaScanGenerator(fileIndex)
+        (planWithRemovedProjections.canonicalized,
+          () => filesForScan(scanGenerator, limit, filters, delta))
+    }.toMap
+
+    val threads = if (prepareScanThreadPoolSize == 0) scans.size else prepareScanThreadPoolSize
+
+    val generatedScans = ThreadUtils.parmap(scans.toSeq, "PrepareDeltaScan", threads) {
+      case (plan, generateFunc) => (plan, generateFunc())
+    }.toMap
 
     transformWithSubqueries(plan) {
-        case scan @ DeltaTableScan(planWithRemovedProjections, filters, fileIndex,
-          limit, delta) =>
-          val scanGenerator = getDeltaScanGenerator(fileIndex)
-          val preparedScan = deltaScans.getOrElseUpdate(planWithRemovedProjections.canonicalized,
-              filesForScan(scanGenerator, limit, filters, delta))
-          val preparedIndex = getPreparedIndex(preparedScan, fileIndex)
-          optimizeGeneratedColumns(scan, preparedIndex, filters, limit, delta)
-      }
+      case scan @ DeltaTableScan(planWithRemovedProjections, filters, fileIndex,
+        limit, delta) =>
+        val scanGenerator = getDeltaScanGenerator(fileIndex)
+        val preparedScan = generatedScans(planWithRemovedProjections.canonicalized)
+        val preparedIndex = getPreparedIndex(preparedScan, fileIndex)
+        optimizeGeneratedColumns(scan, preparedIndex, filters, limit, delta)
+    }
   }
 
   protected def optimizeGeneratedColumns(

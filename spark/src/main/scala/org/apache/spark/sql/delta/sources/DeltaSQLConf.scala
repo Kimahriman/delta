@@ -657,6 +657,16 @@ trait DeltaSQLConfBase {
       .booleanConf
       .createWithDefault(true)
 
+  val PREPARE_DELTA_SCAN_THREADPOOL_SIZE =
+    buildConf("prepareScan.threadPoolSize")
+      .internal()
+      .doc("The number of threads to use to prepare Delta scans for a single query. Increasing " +
+        "this value can speed up preparing a query that reads multiple Delta tables. A value of " +
+        "0 will use as many threads as unique scans that need to be prepared for a query.")
+      .intConf
+      .checkValue(_ >= 0, "prepareScan.threadPoolSize size can not be negative.")
+      .createWithDefault(0)
+
   //////////////////////////////////////////////
   // DynamoDB Commit Coordinator-specific configs
   /////////////////////////////////////////////
