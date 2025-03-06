@@ -137,7 +137,7 @@ trait PrepareDeltaScanBase extends Rule[LogicalPlan]
   }
 
   /**
-   * Prepares delta scans sequentially.
+   * Prepares delta scans in parallel.
    */
   protected def prepareDeltaScan(plan: LogicalPlan): LogicalPlan = {
     val scans = plan.collect {
@@ -146,6 +146,10 @@ trait PrepareDeltaScanBase extends Rule[LogicalPlan]
         (planWithRemovedProjections.canonicalized,
           () => filesForScan(scanGenerator, limit, filters, delta))
     }.toMap
+
+    if (scans.isEmpty) {
+      return plan
+    }
 
     val threads = if (prepareScanThreadPoolSize == 0) scans.size else prepareScanThreadPoolSize
 
