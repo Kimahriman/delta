@@ -665,7 +665,7 @@ trait DeltaSQLConfBase {
         "0 will use as many threads as unique scans that need to be prepared for a query.")
       .intConf
       .checkValue(_ >= 0, "prepareScan.threadPoolSize size can not be negative.")
-      .createWithDefault(0)
+      .createWithDefault(4)
 
   //////////////////////////////////////////////
   // DynamoDB Commit Coordinator-specific configs
