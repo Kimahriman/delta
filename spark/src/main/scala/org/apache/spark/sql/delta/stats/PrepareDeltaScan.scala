@@ -140,21 +140,13 @@ trait PrepareDeltaScanBase extends Rule[LogicalPlan]
    * Prepares delta scans in parallel.
    */
   protected def prepareDeltaScan(plan: LogicalPlan): LogicalPlan = {
-    // scalastyle:off println
-    val scans = new mutable.HashMap[LogicalPlan, () => DeltaScan]
-    transformWithSubqueries(plan) {
+    // val scans = new mutable.HashMap[LogicalPlan, () => DeltaScan]
+    val scans = plan.collectWithSubqueries {
       case scan @ DeltaTableScan(planWithRemovedProjections, filters, fileIndex, limit, delta) =>
-        // println("Found scan")
-        // println(planWithRemovedProjections)
         val scanGenerator = getDeltaScanGenerator(fileIndex)
-        scans.put(planWithRemovedProjections.canonicalized,
+        (planWithRemovedProjections.canonicalized,
           () => filesForScan(scanGenerator, limit, filters, delta))
-        scan
-    }
-
-    // println()
-    // println(s"Found scans: ${scans.size}")
-    // scans.foreach(println)
+    }.toMap
 
     if (scans.isEmpty) {
       return plan
@@ -166,17 +158,9 @@ trait PrepareDeltaScanBase extends Rule[LogicalPlan]
       case (plan, generateFunc) => (plan, generateFunc())
     }.toMap
 
-    // println()
-    // println("Generated scans for")
-    // generatedScans.keys.foreach(println)
-    // println()
-
     plan.transformDownWithSubqueries {
       case scan @ DeltaTableScan(planWithRemovedProjections, filters, fileIndex,
         limit, delta) =>
-        // println()
-        // println("Getting scan for")
-        // println(planWithRemovedProjections.canonicalized)
         val preparedScan = generatedScans(planWithRemovedProjections.canonicalized)
         val preparedIndex = getPreparedIndex(preparedScan, fileIndex)
         optimizeGeneratedColumns(scan, preparedIndex, filters, limit, delta)
